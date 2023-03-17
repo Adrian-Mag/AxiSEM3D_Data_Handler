@@ -43,8 +43,12 @@ class element_output:
             
         self.path_to_elements_output = path + '/output/elements/' + self.element_group_name
         self.grid_format = grid_format
+        
+        # Load the data, without the dict_data_wave because that one is too big. So we only
+        # load the data that allows us to locate the wavefield data so we can later only load 
+        # the file containing the specific data point we are interested in
         self.na_grid, self.data_time, self.list_element_na, self.list_element_coords, self.\
-        dict_list_element, self.dict_data_wave = self._read_element_output(path)
+        dict_list_element, self.dict_data_wave = self._read_element_output(path, load_wave_data=False)
         self.rotation_matrix = self._compute_rotation_matrix()
 
     def _compute_rotation_matrix(self):
@@ -52,7 +56,7 @@ class element_output:
 
         Returns:
             np.ndarray: 3D rotation matrix
-        """        
+        """
         # get real earth coordinates of the sources
         colatitude = np.pi/2 - np.deg2rad(self.source_lat)
         longitude = np.deg2rad(self.source_lon)
@@ -315,7 +319,7 @@ class element_output:
 
         return stream
 
-    def _read_element_output(self, load_wave_data=True):
+    def _read_element_output(self, load_wave_data=False):
         """Reads a folder that contains the element output files form
         Axisem3D and outputs a more readable format of the data as numpy 
         arrays.
@@ -368,7 +372,7 @@ class element_output:
         for nag in na_grid:
             dict_xda_list_element[nag] = []
             dict_xda_data_wave[nag] = []
-        
+
         # loop over nc files
         for nc_file in nc_files:
             # append DataArrays
