@@ -43,12 +43,8 @@ class element_output:
             
         self.path_to_elements_output = path + '/output/elements/' + self.element_group_name
         self.grid_format = grid_format
-        
-        # Load the data, without the dict_data_wave because that one is too big. So we only
-        # load the data that allows us to locate the wavefield data so we can later only load 
-        # the file containing the specific data point we are interested in
         self.na_grid, self.data_time, self.list_element_na, self.list_element_coords, self.\
-        dict_list_element, self.dict_data_wave = self._read_element_output(path, load_wave_data=False)
+        dict_list_element, self.dict_data_wave = self._read_element_output(path)
         self.rotation_matrix = self._compute_rotation_matrix()
 
     def _compute_rotation_matrix(self):
@@ -132,7 +128,7 @@ class element_output:
             result += (2. * np.exp(1j * order * phi) * coeff).real
 
         return result
-    
+
 
     def inplane_interpolation(self, point: list, plot: bool = False)-> np.ndarray:
         """Takes in a point in spherical coordinates in the real earth 
@@ -319,7 +315,7 @@ class element_output:
 
         return stream
 
-    def _read_element_output(self, load_wave_data=False):
+    def _read_element_output(self, load_wave_data=True):
         """Reads a folder that contains the element output files form
         Axisem3D and outputs a more readable format of the data as numpy 
         arrays.
@@ -348,8 +344,9 @@ class element_output:
         """        
         ################ open files ################
         # filenames
-        nc_fnames = [f for f in os.listdir(self.path_to_elements_output) if 'axisem3d_synthetics.nc' in f]
+        nc_fnames = sorted([f for f in os.listdir(self.path_to_elements_output) if 'axisem3d_synthetics.nc' in f])
 
+        
         # open files
         nc_files = []
         for nc_fname in nc_fnames:
@@ -372,7 +369,7 @@ class element_output:
         for nag in na_grid:
             dict_xda_list_element[nag] = []
             dict_xda_data_wave[nag] = []
-
+        
         # loop over nc files
         for nc_file in nc_files:
             # append DataArrays
