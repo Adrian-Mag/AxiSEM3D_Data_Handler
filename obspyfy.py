@@ -238,7 +238,7 @@ def obspyfy(path, output_type, stations_paths = None, grid_format = [0,2,4]):
                 sample_rate=None)
                 sta.channels.append(cha)
             
-            # Form the lists that will be used as inputs with read_netcdf
+            # Form the lists that will be used as inputs with element_output
             # to get the stream of the wavefield data
             networks.append(station['network'])
             station_names.append(station['name'])
