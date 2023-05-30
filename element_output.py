@@ -18,7 +18,8 @@ class element_output:
             grid_format (list): see the AxiSEM3D input templates
             for the element output. The options are:
             [2], [0,2,4],['all']
-        """        
+        """ 
+        # Basic properties of the element object
         self.path = path
         inparam_output_path = path + '/input/inparam.output.yaml'
         inparam_source_path = path + '/input/inparam.source.yaml'
@@ -38,7 +39,6 @@ class element_output:
             # assume a single point source
             source = source_yaml['list_of_sources'][0][source_name]
             [self.source_lat, self.source_lon]=  source['location']['latitude_longitude']
-            source_yaml = yaml.load(file, Loader=yaml.FullLoader)
             
         self.path_to_elements_output = path + '/output/elements/' + self.element_group_name
         self.grid_format = grid_format
@@ -49,7 +49,7 @@ class element_output:
 
     def stream(self, path_to_station_file: str) -> obspy.Stream:
         """Takes in the path to a station file used for axisem3d
-        and returns a stram with the wavefields computed at all stations
+        and returns a stream with the wavefields computed at all stations
 
         Args:
             path_to_station_file (str): path to station.txt file
@@ -92,6 +92,45 @@ class element_output:
 
         return stream
 
+
+    def stream(self, stadepth: float, stalat: float, stalon: float) -> obspy.Stream:
+        """Takes in the location of a station in meters and degrees
+        and returns a stream with the wavefields computed at all stations
+
+        Args:
+            stadepth: station depth in m
+            stalat: station latitude in deg
+            stalon: station longitude in deg
+
+        Returns:
+            obspy.stream: stream
+        """        
+        
+        # initiate stream that will hold data 
+        stream = obspy.Stream()
+        starad = 6371e3 - stadepth
+        # get the data at this station (assuming RTZ components)
+        wave_data = self.load_data_at_point([starad, stalat, stalon])
+        
+        delta = self.data_time[1] - self.data_time[0]
+        npts = len(self.data_time)
+        network = str(np.random.randint(0, 100))
+        station_name = str(np.random.randint(0, 100))
+        print(station_name)
+        for chn_index, chn in enumerate(['LXR', 'LXT', 'LXZ']):
+            # form the traces at the channel level
+            trace = obspy.Trace(wave_data[chn_index])
+            trace.stats.delta = delta
+            trace.stats.ntps = npts
+            trace.stats.network = network
+            trace.stats.station = station_name
+            trace.stats.location = ''
+            trace.stats.channel = chn
+            trace.stats.starttime = obspy.UTCDateTime("1970-01-01T00:00:00.0Z") + self.data_time[0]
+            stream.append(trace)
+
+        return stream
+    
 
     def load_data_at_point(self, point: list) -> np.ndarray:
         """Expands an inplane point into the longitudinal direction
@@ -183,8 +222,8 @@ class element_output:
             # Now we interpolate using GLL
             for i in range(3):
                 for j in range(3):
-                    interpolated_data += self.lagrange(r, radial_element_GLL_points[j], radial_element_GLL_points) * \
-                    self.lagrange(theta, theta_element_GLL_points[i], theta_element_GLL_points) * data_wave[:,3*i+j,:,:]
+                    interpolated_data += self._lagrange(r, radial_element_GLL_points[j], radial_element_GLL_points) * \
+                    self._lagrange(theta, theta_element_GLL_points[i], theta_element_GLL_points) * data_wave[:,3*i+j,:,:]
 
             
         return interpolated_data
@@ -332,14 +371,14 @@ class element_output:
 
         Returns:
             list: [radius, theta]
-        """        
+        """       
         r = np.sqrt(s**2 + z**2)
         theta = np.arctan(z/s)
         
         return [r, theta]
 
 
-    def lagrange(self, evaluation_point, evaluation_GLL_point, GLL_points):
+    def _lagrange(self, evaluation_point, evaluation_GLL_point, GLL_points):
         """ Lagrange functino implementation
         """
         value = 1
