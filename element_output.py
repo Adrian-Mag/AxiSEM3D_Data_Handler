@@ -112,11 +112,11 @@ class element_output:
         # get the data at this station (assuming RTZ components)
         wave_data = self.load_data_at_point([starad, stalat, stalon])
         
+        # Construct metadata 
         delta = self.data_time[1] - self.data_time[0]
         npts = len(self.data_time)
         network = str(np.random.randint(0, 100))
         station_name = str(np.random.randint(0, 100))
-        print(station_name)
         for chn_index, chn in enumerate(['LXR', 'LXT', 'LXZ']):
             # form the traces at the channel level
             trace = obspy.Trace(wave_data[chn_index])
