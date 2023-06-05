@@ -83,7 +83,7 @@ def obspyfy(path, output_type, stations_paths = None, grid_format = [0,2,4]):
         # Create Inventory
         ##################
 
-        stations_paths = glob.glob(path + '/input/*.txt')
+        stations_paths = glob.glob(path + '/input/STA*.txt')
         inparam_output_path = path + '/input/inparam.output.yaml'
         networks = []
         station_names = []
@@ -254,6 +254,6 @@ def obspyfy(path, output_type, stations_paths = None, grid_format = [0,2,4]):
         ###################
 
         
-        stream = obj.stream(path_to_station_file=stations_path)
+        stream = obj.stream_STA(path_to_station_file=stations_path)
         name = obj.element_group_name
         stream.write(path + '/output/obspyfied/' + name + '.mseed', format="MSEED") 

@@ -47,7 +47,7 @@ class element_output:
         self.rotation_matrix = self._compute_rotation_matrix()
 
 
-    def stream(self, path_to_station_file: str) -> obspy.Stream:
+    def stream_STA(self, path_to_station_file: str) -> obspy.Stream:
         """Takes in the path to a station file used for axisem3d
         and returns a stream with the wavefields computed at all stations
 
@@ -72,7 +72,7 @@ class element_output:
             starad = 6371e3 - stadepth
             # get the data at this station (assuming RTZ components)
             wave_data = self.load_data_at_point([starad, stalat, stalon])
-            
+
             delta = self.data_time[1] - self.data_time[0]
             npts = len(self.data_time)
             network = station['network']
@@ -287,11 +287,9 @@ class element_output:
             # append DataArrays
             xda_list_element_na.append(nc_file.data_vars['list_element_na'])
             xda_list_element_coords.append(nc_file.data_vars['list_element_coords'])
-            dict_file_no_na_grid.append({})
             for nag in na_grid:
-                dict_file_no_na_grid[i][nag] = len(nc_file['data_wave__NaG=%d' % nag])
                 dict_xda_list_element[nag].append(nc_file.data_vars['list_element__NaG=%d' % nag])
-            dict_file_no_na_grid[i]['total'] = sum(dict_file_no_na_grid[i].values())
+            dict_file_no_na_grid.append((nc_file.list_element_na.data[0][-1], nc_file.list_element_na.data[-1][-1]))
                 
         # concat xarray.DataArray
         xda_list_element_na = xr.concat(xda_list_element_na, dim='dim_element')
@@ -392,9 +390,14 @@ class element_output:
         # First we find in which file the data must be searched
         data_index = element_na[4]
         file_index = 0
-        while data_index - self.dict_file_no_na_grid[file_index][element_na[2]] > 0:
-            data_index -= self.dict_file_no_na_grid[file_index][element_na[2]]
-            file_index += 1
+        FOUND_FILE = False
+        file_index = 0
+        while FOUND_FILE is False:
+            if (data_index > self.dict_file_no_na_grid[file_index][0] 
+                and data_index < self.dict_file_no_na_grid[file_index][1]):
+                FOUND_FILE = True
+            else:
+                file_index += 1
         # and extract the data from that file
         wave_data = self.files[file_index]['data_wave__NaG=%d' % element_na[2]][element_na[3]]
 
