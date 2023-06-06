@@ -1,5 +1,5 @@
 import sys
-sys.path.append('/home/adrian/PhD/AxiSEM3D/Output_Handlers')
+sys.path.append('/disks/data/PhD/AxiSEM3D_Data_Handler')
 from element_output import element_output
 
 print(os.getpid())
