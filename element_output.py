@@ -7,6 +7,10 @@ import yaml
 import pandas as pd
 import xarray as xr
 import obspy 
+from obspy.core.event import Catalog, Event, Origin, FocalMechanism, MomentTensor, Tensor
+from obspy import UTCDateTime
+from obspy.geodetics import FlinnEngdahl
+
 
 class element_output:
     def __init__(self, path:str, grid_format:list) -> None:
@@ -45,6 +49,60 @@ class element_output:
         self.na_grid, self.data_time, self.list_element_na, self.list_element_coords, self.\
         dict_list_element, self.files, self.dict_file_no_na_grid = self._read_element_metadata()
         self.rotation_matrix = self._compute_rotation_matrix()
+
+
+    def create_catalogue(self):
+        # Create a catalogue
+        source_path = self.path + '/input/inparam.source.yaml'
+        with open(source_path, 'r') as file:
+                source_yaml = yaml.load(file, Loader=yaml.FullLoader)
+                cat = Catalog()
+                for source in source_yaml['list_of_sources']:
+                    for items in source.items():
+                        event = Event()
+                        origin = Origin()
+                        
+                        origin.time = UTCDateTime("1970-01-01T00:00:00.0Z") # default in obspy
+                        origin.latitude = items[1]['location']['latitude_longitude'][0]
+                        origin.longitude = items[1]['location']['latitude_longitude'][1]
+                        origin.depth = items[1]['location']['depth']
+                        origin.depth_type = "operator assigned"
+                        origin.evaluation_mode = "manual"
+                        origin.evaluation_status = "preliminary"
+                        origin.region = FlinnEngdahl().get_region(origin.longitude, 
+                                                                  origin.latitude)
+                        if items[1]['mechanism']['type'] == 'FORCE_VECTOR':
+                            m_rr = items[1]['mechanism']['data'][0]
+                            m_tt = items[1]['mechanism']['data'][1]
+                            m_pp = items[1]['mechanism']['data'][2]
+                            m_rt = 0
+                            m_rp = 0
+                            m_tp = 0
+                        else: 
+                            m_rr = items[1]['mechanism']['data'][0]
+                            m_tt = items[1]['mechanism']['data'][1]
+                            m_pp = items[1]['mechanism']['data'][2]
+                            m_rt = items[1]['mechanism']['data'][3]
+                            m_rp = items[1]['mechanism']['data'][4]
+                            m_tp = items[1]['mechanism']['data'][5]
+                        
+                        focal_mechanisms = FocalMechanism()
+                        tensor = Tensor()
+                        moment_tensor = MomentTensor()
+                        tensor.m_rr = m_rr
+                        tensor.m_tt = m_tt
+                        tensor.m_pp = m_pp
+                        tensor.m_rt = m_rt
+                        tensor.m_rp = m_rp
+                        tensor.m_tp = m_tp
+                        moment_tensor.tensor = tensor
+                        focal_mechanisms.moment_tensor = moment_tensor
+                                            
+                        # make associations, put everything together
+                        cat.append(event)
+                        event.origins = [origin]
+                        event.focal_mechanisms = [focal_mechanisms]
+        return cat
 
 
     def stream_STA(self, path_to_station_file: str) -> obspy.Stream:
