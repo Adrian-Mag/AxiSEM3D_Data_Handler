@@ -393,8 +393,8 @@ class element_output:
         FOUND_FILE = False
         file_index = 0
         while FOUND_FILE is False:
-            if (data_index > self.dict_file_no_na_grid[file_index][0] 
-                and data_index < self.dict_file_no_na_grid[file_index][1]):
+            if (data_index >= self.dict_file_no_na_grid[file_index][0] 
+                and data_index <= self.dict_file_no_na_grid[file_index][1]):
                 FOUND_FILE = True
             else:
                 file_index += 1
