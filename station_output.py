@@ -9,6 +9,9 @@ import pandas as pd
 import netCDF4 as nc
 import os 
 
+#@@@@@@@@@@
+# HANDLER @
+#@@@@@@@@@@
 
 class station_output:
     def __init__(self, path: str):
@@ -118,6 +121,9 @@ class station_output:
         
         return index
 
+#@@@@@@@@@
+# PARSER @
+#@@@@@@@@@
 
 def parse_station_output(path: str) -> obspy.Stream:
     """Function that takes the path to stations output, gathers the nc files 
