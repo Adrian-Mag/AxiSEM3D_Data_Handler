@@ -163,13 +163,13 @@ class element_output:
         Returns:
             obspy.stream: stream
         """        
-        
+
         # initiate stream that will hold data 
         stream = obspy.Stream()
         starad = 6371e3 - stadepth
         # get the data at this station (assuming RTZ components)
         wave_data = self.load_data_at_point([starad, stalat, stalon])
-        
+
         # Construct metadata 
         delta = self.data_time[1] - self.data_time[0]
         npts = len(self.data_time)
@@ -244,7 +244,7 @@ class element_output:
         s, z, phi = self._geo_to_cyl(point)
         # spherical coordinates will be used for the GLL interpolation
         [r, theta] = self._cart_to_polar(s,z)
-        
+
         if self.grid_format == [0,2,4]:
             # The of the element are positioned like this (GLL point)
             # The numbers inbetween the points are the sub-element numbers
