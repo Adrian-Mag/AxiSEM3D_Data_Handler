@@ -7,102 +7,80 @@ import yaml
 import pandas as pd
 import xarray as xr
 import obspy 
-from obspy.core.event import Catalog, Event, Origin, FocalMechanism, MomentTensor, Tensor
-from obspy import UTCDateTime
-from obspy.geodetics import FlinnEngdahl
+import sys
 
+from .axisem3d_output import AxiSEM3DOutput
 
-class element_output:
-    def __init__(self, path:str, grid_format:list) -> None:
-        """Initializes the element object for the given path
+class ElementOutput(AxiSEM3DOutput):
+    def __init__(self, path_to_element_output:str, element_group:str = None) -> None:
+        """Initializes the ElementOutput object for the given path to the element output directory.
 
         Args:
-            path (str): a string that contains the path to the 
-            directory just above "input" and "output"
-            grid_format (list): see the AxiSEM3D input templates
-            for the element output. The options are:
-            [2], [0,2,4],['all']
-        """ 
-        # Basic properties of the element object
-        self.path = path
-        inparam_output_path = path + '/input/inparam.output.yaml'
-        inparam_source_path = path + '/input/inparam.source.yaml'
-        
-        # Get element group names and channels from the input file
-        with open(inparam_output_path, 'r') as file:
+            path_to_element_output (str): Path to the element output directory.
+            element_group (str, optional): Name of the element group. If None, the first element group found will be used.
+
+        Attributes:
+            path_to_elements_output (str): Path to the element output directory.
+            na_grid (numpy.ndarray): NA grid information.
+            data_time (numpy.ndarray): Data time information.
+            list_element_na (numpy.ndarray): List of element NA values.
+            list_element_coords (numpy.ndarray): List of element coordinates.
+            dict_list_element (dict): Dictionary of list of elements.
+            files (list): List of element output files.
+            elements_index_limits (list): List containing element index limits.
+            rotation_matrix (numpy.ndarray): Rotation matrix.
+            coordinate_frame (str): Coordinate frame of the wavefields.
+            channels (list): List of wavefield channels.
+            detailed_channels (list): List of channels component by component
+            grid_format (str): Grid format for the in-plane coordinates.
+            source_lat (float): Latitude of the event located on the axis.
+            source_lon (float): Longitude of the event located on the axis.
+        """
+        path_to_simulation = self._find_simulation_path(path_to_element_output)
+        super().__init__(path_to_simulation)
+
+        # Get element group names, channels, and grid format from the input file
+        with open(self.inparam_output, 'r') as file:
             output_yaml = yaml.load(file, Loader=yaml.FullLoader)
-            for element_group in output_yaml['list_of_element_groups']:
-                # this only works when only one element group has been used
-                self.element_group_name = list(element_group.keys())[0]
-                self.channel_type  = element_group[self.element_group_name]['wavefields']['coordinate_frame']
-                
-        # get lat lon of the event
-        with open(inparam_source_path, 'r') as file:
+            if element_group is None:
+                # If no element group is provided it will simply use the first element group that it finds
+                element_group_name = list((self.outputs['elements'].keys()))[0]
+                element_group = output_yaml['list_of_element_groups'][0][element_group_name]
+                self.coordinate_frame  = element_group['wavefields']['coordinate_frame']
+                self.channels = element_group['wavefields']['channels']
+                self.grid_format = element_group['inplane']['GLL_points_one_edge']
+
+        # get lat lon of the event located on the axis
+        with open(self.inparam_source, 'r') as file:
             source_yaml = yaml.load(file, Loader=yaml.FullLoader)
             source_name = list(source_yaml['list_of_sources'][0].keys())[0]
             # assume a single point source
             source = source_yaml['list_of_sources'][0][source_name]
             [self.source_lat, self.source_lon]=  source['location']['latitude_longitude']
-            
-        self.path_to_elements_output = path + '/output/elements/' + self.element_group_name
-        self.grid_format = grid_format
+
+        self.path_to_elements_output = path_to_element_output
+        # Get metadata 
         self.na_grid, self.data_time, self.list_element_na, self.list_element_coords, self.\
-        dict_list_element, self.files, self.dict_file_no_na_grid = self._read_element_metadata()
+        dict_list_element, self.files, self.elements_index_limits, self.detailed_channels = self._read_element_metadata()
+        # Replace the numerical indicators of coordinates with letters based on the cordinate system
+        self.detailed_channels = [element.replace('1', self.coordinate_frame[0]).\
+                                  replace('2', self.coordinate_frame[1]).\
+                                  replace('3', self.coordinate_frame[2]) \
+                                  for element in self.detailed_channels]
+        
         self.rotation_matrix = self._compute_rotation_matrix()
+        self.Earth_Radius = 6371000 # m
 
-
-    def create_catalogue(self):
-        # Create a catalogue
-        source_path = self.path + '/input/inparam.source.yaml'
-        with open(source_path, 'r') as file:
-                source_yaml = yaml.load(file, Loader=yaml.FullLoader)
-                cat = Catalog()
-                for source in source_yaml['list_of_sources']:
-                    for items in source.items():
-                        event = Event()
-                        origin = Origin()
-                        
-                        origin.time = UTCDateTime("1970-01-01T00:00:00.0Z") # default in obspy
-                        origin.latitude = items[1]['location']['latitude_longitude'][0]
-                        origin.longitude = items[1]['location']['latitude_longitude'][1]
-                        origin.depth = items[1]['location']['depth']
-                        origin.depth_type = "operator assigned"
-                        origin.evaluation_mode = "manual"
-                        origin.evaluation_status = "preliminary"
-                        origin.region = FlinnEngdahl().get_region(origin.longitude, 
-                                                                  origin.latitude)
-                        if items[1]['mechanism']['type'] == 'FORCE_VECTOR':
-                            m_rr = items[1]['mechanism']['data'][0]
-                            m_tt = items[1]['mechanism']['data'][1]
-                            m_pp = items[1]['mechanism']['data'][2]
-                            m_rt = 0
-                            m_rp = 0
-                            m_tp = 0
-                        else: 
-                            m_rr = items[1]['mechanism']['data'][0]
-                            m_tt = items[1]['mechanism']['data'][1]
-                            m_pp = items[1]['mechanism']['data'][2]
-                            m_rt = items[1]['mechanism']['data'][3]
-                            m_rp = items[1]['mechanism']['data'][4]
-                            m_tp = items[1]['mechanism']['data'][5]
-                        
-                        focal_mechanisms = FocalMechanism()
-                        tensor = Tensor()
-                        moment_tensor = MomentTensor()
-                        tensor.m_rr = m_rr
-                        tensor.m_tt = m_tt
-                        tensor.m_pp = m_pp
-                        tensor.m_rt = m_rt
-                        tensor.m_rp = m_rp
-                        tensor.m_tp = m_tp
-                        moment_tensor.tensor = tensor
-                        focal_mechanisms.moment_tensor = moment_tensor
-                                            
-                        # make associations, put everything together
-                        cat.append(event)
-                        event.origins = [origin]
-                        event.focal_mechanisms = [focal_mechanisms]
-        return cat
+    def _find_simulation_path(self, path: str):
+        current_directory = os.path.abspath(path)
+        while True:
+            parent_directory = os.path.dirname(current_directory)
+            if os.path.basename(current_directory) == 'output':
+                return parent_directory
+            elif current_directory == parent_directory:
+                # Reached the root directory, "output" directory not found
+                return None
+            current_directory = parent_directory
 
 
     def stream_STA(self, path_to_station_file: str) -> obspy.Stream:
@@ -151,7 +129,9 @@ class element_output:
         return stream
 
 
-    def stream(self, stadepth: float, stalat: float, stalon: float) -> obspy.Stream:
+    def stream(self, point: list, channels: list = None,
+               time_limits: list = None, 
+               fourier_order: int = None) -> obspy.Stream:
         """Takes in the location of a station in meters and degrees
         and returns a stream with the wavefields computed at all stations
 
@@ -163,19 +143,20 @@ class element_output:
         Returns:
             obspy.stream: stream
         """        
-
         # initiate stream that will hold data 
         stream = obspy.Stream()
-        starad = 6371e3 - stadepth
         # get the data at this station (assuming RTZ components)
-        wave_data = self.load_data_at_point([starad, stalat, stalon])
+        wave_data = self.load_data_at_point(point, channels, 
+                                            time_limits, 
+                                            fourier_order)
 
         # Construct metadata 
         delta = self.data_time[1] - self.data_time[0]
         npts = len(self.data_time)
         network = str(np.random.randint(0, 100))
         station_name = str(np.random.randint(0, 100))
-        for chn_index, chn in enumerate(['LXR', 'LXT', 'LXZ']):
+        selected_detailed_channels = [element for element in self.detailed_channels if any(element.startswith(prefix) for prefix in channels)]
+        for chn_index, chn in enumerate(selected_detailed_channels):
             # form the traces at the channel level
             trace = obspy.Trace(wave_data[chn_index])
             trace.stats.delta = delta
@@ -190,7 +171,8 @@ class element_output:
         return stream
     
 
-    def load_data_at_point(self, point: list) -> np.ndarray:
+    def load_data_at_point(self, point: list, channels: list = None,
+                           time_limits: list = None, fourier_order: int = None) -> np.ndarray:
         """Expands an inplane point into the longitudinal direction
         using the fourier expansion
 
@@ -202,9 +184,9 @@ class element_output:
         """
         
         # Transform geographical to cylindrical coords in source frame
-        s, z, phi = self._geo_to_cyl(point)
+        _, _, phi = self._geo_to_cyl(point)
         # Interpolate the data inplane
-        interpolated_data = self.inplane_interpolation(point)
+        interpolated_data = self.inplane_interpolation(point, channels, time_limits)
         
         # I don't fully understand how this fourier reconstruction works ...
         # set complex type
@@ -212,6 +194,8 @@ class element_output:
 
         # find max fourier order
         max_Fourier_order = len(interpolated_data[:,0,0]) // 2
+        if fourier_order is not None and fourier_order < max_Fourier_order:
+            max_Fourier_order = fourier_order // 2 * 2
 
         # initialize result with 0th order 
         result = interpolated_data[0].copy()
@@ -228,7 +212,8 @@ class element_output:
         return result
 
 
-    def inplane_interpolation(self, point: list)-> np.ndarray:
+    def inplane_interpolation(self, point: list, channels: list = None, 
+                              time_limits: list = None)-> np.ndarray:
         """Takes in a point in spherical coordinates in the real earth 
         frame and outputs the displacement data in time for all the 
         available channels in the form of a numpy array. 
@@ -265,7 +250,9 @@ class element_output:
             
             # grab the information about the element whose center we just found
             element_na = self.list_element_na[element_index]
-            
+            for i in range(len(self.elements_index_limits) - 1):
+                if self.elements_index_limits[i] <= element_index < self.elements_index_limits[i+1]:
+                    file_index = i
             # get the element points
             element_points = self.list_element_coords[element_index]
             radial_element_GLL_points = self._cart_to_polar(element_points[[0,1,2]][:,0], 
@@ -274,7 +261,7 @@ class element_output:
                                                            element_points[[0,3,6]][:,1])[1]
 
             # Now we get the data
-            data_wave = self._read_element_data(element_na)
+            data_wave = self._read_element_data(element_na, file_index, channels, time_limits)
             # finally we interpolate at our point
             interpolated_data = np.zeros(data_wave[:,0,:,:].shape)
             # Now we interpolate using GLL
@@ -283,14 +270,13 @@ class element_output:
                     interpolated_data += self._lagrange(r, radial_element_GLL_points[j], radial_element_GLL_points) * \
                     self._lagrange(theta, theta_element_GLL_points[i], theta_element_GLL_points) * data_wave[:,3*i+j,:,:]
 
-            
         return interpolated_data
-    
-    
+
+
     def _read_element_metadata(self):
         """Reads a folder that contains the element output files form
-        Axisem3D and outputs a more readable format of the data as numpy 
-        arrays.
+        Axisem3D and outputs the metadata needed to access any data point
+        from the mesh.
 
         Args:
             load_wave_data (bool, optional): _description_. Defaults to True.
@@ -335,7 +321,9 @@ class element_output:
         xda_list_element_na = []
         xda_list_element_coords = []
         dict_xda_list_element = {}
-        dict_file_no_na_grid = []
+        detailed_channels = [str_byte.decode('utf-8') for str_byte in nc_files[0].list_channel.data]
+        elements_index_limits = [0]
+        index_limit = 0
         ######dict_xda_data_wave = {}
         for nag in na_grid:
             dict_xda_list_element[nag] = []
@@ -343,18 +331,19 @@ class element_output:
         # loop over nc files
         for i, nc_file in enumerate(nc_files):
             # append DataArrays
+            index_limit += nc_file.sizes['dim_element']
+            elements_index_limits.append(index_limit)
             xda_list_element_na.append(nc_file.data_vars['list_element_na'])
             xda_list_element_coords.append(nc_file.data_vars['list_element_coords'])
             for nag in na_grid:
                 dict_xda_list_element[nag].append(nc_file.data_vars['list_element__NaG=%d' % nag])
-            dict_file_no_na_grid.append((nc_file.list_element_na.data[0][-1], nc_file.list_element_na.data[-1][-1]))
-                
+
         # concat xarray.DataArray
         xda_list_element_na = xr.concat(xda_list_element_na, dim='dim_element')
         xda_list_element_coords = xr.concat(xda_list_element_coords, dim='dim_element')
         for nag in na_grid:
             dict_xda_list_element[nag] = xr.concat(dict_xda_list_element[nag], dim='dim_element__NaG=%d' % nag)
-            
+
         # read data to numpy.ndarray
         list_element_na = xda_list_element_na.values.astype(int)
         list_element_coords = xda_list_element_coords.values
@@ -366,9 +355,12 @@ class element_output:
         # Here we return the files only because in this format they are not being loaded into RAM
         # Since these files are huge we prefer to load into ram only the file where the data that we 
         # want is located and then close the file. 
-        return na_grid, data_time, list_element_na, list_element_coords, dict_list_element, nc_files, dict_file_no_na_grid
+        return na_grid, data_time, list_element_na, \
+               list_element_coords, dict_list_element, \
+               nc_files, elements_index_limits, \
+               detailed_channels
         
-    
+
     def _compute_rotation_matrix(self):
         """Computes the rotation matrix that aligns the z axis with the source axis
 
@@ -444,20 +436,59 @@ class element_output:
         return value
 
 
-    def _read_element_data(self, element_na):
-        # First we find in which file the data must be searched
-        data_index = element_na[4]
-        file_index = 0
-        FOUND_FILE = False
-        file_index = 0
-        while FOUND_FILE is False:
-            if (data_index >= self.dict_file_no_na_grid[file_index][0] 
-                and data_index <= self.dict_file_no_na_grid[file_index][1]):
-                FOUND_FILE = True
+    def _read_element_data(self, element_na, file_index, 
+                           channels: list = None, time_limits: list = None):
+        wave_data = self.files[file_index]['data_wave__NaG=%d' % element_na[2]][element_na[3]].values
+        if channels is None and time_limits is None:
+            return wave_data
+        elif channels is None and time_limits is not None:
+            # Check if times desired are available
+            if np.min(self.data_time) < time_limits[0] and np.max(self.data_time) > time_limits[1]:
+                # Find the indices of elements between t_min and t_max
+                indices = np.where((self.data_time >= time_limits[0]) & (self.data_time <= time_limits[1]))
+                return wave_data[:,:,:,indices]
             else:
-                file_index += 1
-        # and extract the data from that file
-        wave_data = self.files[file_index]['data_wave__NaG=%d' % element_na[2]][element_na[3]]
+                raise Exception('Times must be between: ' + str(min(self.data_time)) + ' and ' + str(max(self.data_time)))
+        elif channels is not None and time_limits is None:
+            if(self._check_elements(channels, self.channels)):
+                # Filter by channels chosen
+                channel_indices = []
+                for channel in channels:
+                    channel_indices += [index for index, element in enumerate(self.detailed_channels) if element.startswith(channel)]
+                return wave_data[:,:,channel_indices,:]
+            else:
+                raise Exception('Only the following channels exist: ' + ', '.join(self.channels))
+        else:            
+            # Check if times desired are available
+            if np.min(self.data_time) < time_limits[0] and np.max(self.data_time) > time_limits[1]:
+                # Find the indices of elements between t_min and t_max
+                indices = np.where((self.data_time >= time_limits[0]) & (self.data_time <= time_limits[1]))
+                wave_data = wave_data[:,:,:,indices]
+            else:
+                raise Exception('Times must be between: ' + str(min(self.data_time)) + ' and ' + str(max(self.data_time)))
+            if(self._check_elements(channels, self.channels)):
+                # Filter by channels chosen
+                channel_indices = []
+                for channel in channels:
+                    channel_indices += [index for index, element in enumerate(self.detailed_channels) if element.startswith(channel)]
+                return wave_data[:,:,channel_indices,:]
+            else:
+                raise Exception('Only the following channels exist: ' + ', '.join(self.channels))
 
-        return wave_data.values
-    
+
+    def _check_elements(self, list1, list2):
+        """Checks if all elements in list1 can be found in list2.
+
+        Args:
+            list1 (list): The first list.
+            list2 (list): The second list.
+
+        Returns:
+            bool: True if all elements in list1 are found in list2, False otherwise.
+            list: List of elements from list1 that are not found in list2.
+        """
+        missing_elements = [element for element in list1 if element not in list2]
+        if len(missing_elements) == 0:
+            return True
+        else:
+            return False
