@@ -11,7 +11,7 @@ from obspy.core.inventory import Inventory, Network, Station, Channel
 import pandas as pd
 import glob
 from .station_output import parse_station_output
-from .element_output import element_output
+from .element_output import ElementOutput
 
 
 def obspyfy(path, output_type, stations_paths = None, grid_format = [0,2,4]):
