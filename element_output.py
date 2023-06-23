@@ -71,7 +71,17 @@ class ElementOutput(AxiSEM3DOutput):
         self.rotation_matrix = self._compute_rotation_matrix()
         self.Earth_Radius = 6371000 # m
 
+
     def _find_simulation_path(self, path: str):
+        """Takes in the path to a station file used for axisem3d
+        and returns a stream with the wavefields computed at all stations
+
+        Args:
+            path_to_station_file (str): path to station.txt file
+
+        Returns:
+            parent_directory
+        """
         current_directory = os.path.abspath(path)
         while True:
             parent_directory = os.path.dirname(current_directory)
@@ -83,7 +93,10 @@ class ElementOutput(AxiSEM3DOutput):
             current_directory = parent_directory
 
 
-    def stream_STA(self, path_to_station_file: str) -> obspy.Stream:
+    def stream_STA(self, path_to_station_file: str, 
+                   channels: list = None,
+                   time_limits: list = None, 
+                   fourier_order: int = None) -> obspy.Stream:
         """Takes in the path to a station file used for axisem3d
         and returns a stream with the wavefields computed at all stations
 
@@ -107,14 +120,21 @@ class ElementOutput(AxiSEM3DOutput):
             stadepth = station['depth']
             starad = 6371e3 - stadepth
             # get the data at this station (assuming RTZ components)
-            wave_data = self.load_data_at_point([starad, stalat, stalon])
-
+            wave_data = self.load_data_at_point([starad, stalat, stalon],
+                                                channels, 
+                                                time_limits, 
+                                                fourier_order)
+            # COnstruct metadata
             delta = self.data_time[1] - self.data_time[0]
             npts = len(self.data_time)
             network = station['network']
             station_name = station['name']
-            print(station_name)
-            for chn_index, chn in enumerate(['LXR', 'LXT', 'LXZ']):
+            if channels is not None:
+                selected_detailed_channels = [element for element in self.detailed_channels \
+                                            if any(element.startswith(prefix) for prefix in channels)]
+            else:
+                selected_detailed_channels = self.detailed_channels
+            for chn_index, chn in enumerate(selected_detailed_channels):
                 # form the traces at the channel level
                 trace = obspy.Trace(wave_data[chn_index])
                 trace.stats.delta = delta
@@ -133,29 +153,42 @@ class ElementOutput(AxiSEM3DOutput):
                time_limits: list = None, 
                fourier_order: int = None) -> obspy.Stream:
         """Takes in the location of a station in meters and degrees
-        and returns a stream with the wavefields computed at all stations
+        and returns a stream with the wavefields computed at all stations.
 
         Args:
-            stadepth: station depth in m
-            stalat: station latitude in deg
-            stalon: station longitude in deg
+            point (list): The location of the station in meters and degrees.
+                        It should be a list with the following elements:
+                        - radian position in meters (float)
+                        - latitude in degrees (float)
+                        - longitude in degrees (float)
+            channels (list, optional): List of wavefield channels to include.
+                                    Defaults to None, which includes all channels.
+            time_limits (list, optional): Time limits for the data.
+                                        It should be a list with two elements:
+                                        - start time in seconds (float)
+                                        - end time in seconds (float)
+                                        Defaults to None, which includes all times.
+            fourier_order (int, optional): Fourier order. Defaults to None.
 
         Returns:
-            obspy.stream: stream
-        """        
+            obspy.Stream: A stream containing the wavefields computed at all stations.
+        """         
         # initiate stream that will hold data 
         stream = obspy.Stream()
         # get the data at this station (assuming RTZ components)
         wave_data = self.load_data_at_point(point, channels, 
                                             time_limits, 
                                             fourier_order)
-
         # Construct metadata 
         delta = self.data_time[1] - self.data_time[0]
         npts = len(self.data_time)
         network = str(np.random.randint(0, 100))
         station_name = str(np.random.randint(0, 100))
-        selected_detailed_channels = [element for element in self.detailed_channels if any(element.startswith(prefix) for prefix in channels)]
+        if channels is not None:
+                selected_detailed_channels = [element for element in self.detailed_channels \
+                                            if any(element.startswith(prefix) for prefix in channels)]
+        else:
+            selected_detailed_channels = self.detailed_channels
         for chn_index, chn in enumerate(selected_detailed_channels):
             # form the traces at the channel level
             trace = obspy.Trace(wave_data[chn_index])
@@ -173,14 +206,23 @@ class ElementOutput(AxiSEM3DOutput):
 
     def load_data_at_point(self, point: list, channels: list = None,
                            time_limits: list = None, fourier_order: int = None) -> np.ndarray:
-        """Expands an inplane point into the longitudinal direction
-        using the fourier expansion
+        """Expands an in-plane point into the longitudinal direction using the Fourier expansion.
 
         Args:
-            point (list): [radial position m, latitude deg, longitude deg] in geographical coords
+            point (list): A list representing the point in geographical coordinates.
+                        It should contain the following elements:
+                        - radial position in meters (float)
+                        - latitude in degrees (float)
+                        - longitude in degrees (float)
+            channels (list, optional): List of channels to include. Defaults to None, which includes all channels.
+            time_limits (list, optional): Time limits for the data. It should be a list with two elements:
+                                        - start time in seconds (float)
+                                        - end time in seconds (float)
+                                        Defaults to None, which includes all times.
+            fourier_order (int, optional): Maximum Fourier order. Defaults to None.
 
         Returns:
-            np.ndarray: _description_
+            np.ndarray: The result of the Fourier expansion, represented as a NumPy array.
         """
         
         # Transform geographical to cylindrical coords in source frame
@@ -214,16 +256,26 @@ class ElementOutput(AxiSEM3DOutput):
 
     def inplane_interpolation(self, point: list, channels: list = None, 
                               time_limits: list = None)-> np.ndarray:
-        """Takes in a point in spherical coordinates in the real earth 
-        frame and outputs the displacement data in time for all the 
-        available channels in the form of a numpy array. 
+        """Takes in a point in spherical coordinates in the real earth frame
+        and outputs the displacement data in time for all the available channels
+        in the form of a NumPy array.
 
         Args:
-            point (list): _description_
+            point (list): A list representing the point in spherical coordinates.
+                        It should contain the following elements:
+                        - radial position in meters (float)
+                        - latitude in degrees (float)
+                        - longitude in degrees (float)
+            channels (list, optional): List of channels to include. Defaults to None, which includes all channels.
+            time_limits (list, optional): Time limits for the data. It should be a list with two elements:
+                                        - start time in seconds (float)
+                                        - end time in seconds (float)
+                                        Defaults to None, which includes all times.
 
         Returns:
-            np.ndarray: _description_
-        """        
+            np.ndarray: The interpolated displacement data in time for all available channels,
+                        represented as a NumPy array.
+        """      
         
         # Transform geographical to cylindrical coords in source frame
         s, z, phi = self._geo_to_cyl(point)
@@ -274,32 +326,33 @@ class ElementOutput(AxiSEM3DOutput):
 
 
     def _read_element_metadata(self):
-        """Reads a folder that contains the element output files form
-        Axisem3D and outputs the metadata needed to access any data point
-        from the mesh.
-
-        Args:
-            load_wave_data (bool, optional): _description_. Defaults to True.
+        """Reads a folder that contains the element output files from Axisem3D
+        and outputs the metadata needed to access any data point from the mesh.
 
         Returns:
-            na_grid (numpy array): a 1D array that contains all "Nr"s used in the 
-                                    fourier expansions in the D domain. 
-            data_time (np array): global time steps of the simulation
-            list_element_na (np array): For each element it gives a 1D array that
+            na_grid (numpy array): A 1D array that contains all "Nr"s used in the 
+                                Fourier expansions in the D domain.
+            data_time (np array): Global time steps of the simulation.
+            list_element_na (np array): For each element, it gives a 1D array that
                                         contains:
-                                        1. element tag in the mesh
-                                        2. actual "Nr"
-                                        3. stored "Nr" (in case you didn't want to store
+                                        1. Element tag in the mesh
+                                        2. Actual "Nr"
+                                        3. Stored "Nr" (in case you didn't want to store
                                         all the Nrs)
-                                        4. element index in the data (local)
-                                        5. element index in the data (global)
+                                        4. Element index in the data (local)
+                                        5. Element index in the data (global)
             list_element_coords (np array): For each element, for each grid point,
                                             gives the coordinates in the D domain as
-                                            (s, z)
-            dict_list_element (dict): Lists of element tags? arranged by Nr in the dict
-            dict_data_wave (dict): For each number of Nr, for each element, for each Nr layer,
-                                    for each gll point, for each channel, the time wave data
-        """        
+                                            (s, z).
+            dict_list_element (dict): Lists of element tags arranged by Nr in the dict.
+            nc_files (list): List of opened netCDF files containing the element output data.
+            elements_index_limits (list): List of element index limits for each netCDF file.
+            detailed_channels (list): List of detailed channel names.
+
+        Note:
+            This method assumes that the element output files are stored in the
+            `path_to_elements_output` directory.
+        """      
         ################ open files ################
         # filenames (sorted correctly)
         nc_fnames = sorted([f for f in os.listdir(self.path_to_elements_output) if 'axisem3d_synthetics.nc' in f])
@@ -427,7 +480,7 @@ class ElementOutput(AxiSEM3DOutput):
 
 
     def _lagrange(self, evaluation_point, evaluation_GLL_point, GLL_points):
-        """ Lagrange functino implementation
+        """ Lagrange function implementation
         """
         value = 1
         for point in GLL_points:
@@ -436,8 +489,35 @@ class ElementOutput(AxiSEM3DOutput):
         return value
 
 
-    def _read_element_data(self, element_na, file_index, 
+    def _read_element_data(self, element_na, file_index: int, 
                            channels: list = None, time_limits: list = None):
+        """Reads the element data from the specified file and returns the wave data.
+
+        Args:
+            element_na (tuple): Element information containing:
+                - Element tag in the mesh
+                - Actual "Nr"
+                - Stored "Nr" (in case you didn't want to store all the Nrs)
+                - Element index in the data (local)
+                - Element index in the data (global)
+            file_index (int): Index of the file containing the element data.
+            channels (list, optional): List of channels to include. Defaults to None.
+            time_limits (list, optional): List of time limits [t_min, t_max]. Defaults to None.
+
+        Returns:
+            np.ndarray: The wave data.
+
+        Raises:
+            Exception: If the specified channels or time limits are not available.
+
+        Note:
+            - If `channels` and `time_limits` are both None, the entire wave data is returned.
+            - If only `time_limits` is provided, the wave data is filtered by the specified time range.
+            - If only `channels` are provided, the wave data is filtered by the specified channels.
+            - If both `channels` and `time_limits` are provided, the wave data is filtered by both.
+
+        Note that the wave data is assumed to be stored in the `files` attribute, which is a list of opened netCDF files.
+        """
         wave_data = self.files[file_index]['data_wave__NaG=%d' % element_na[2]][element_na[3]].values
         if channels is None and time_limits is None:
             return wave_data
