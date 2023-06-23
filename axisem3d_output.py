@@ -29,6 +29,7 @@ class AxiSEM3DOutput:
 
     """
 
+
     def __init__(self, path_to_simulation):
         """
         Initialize the AxiSEM3DOutput instance.
@@ -47,6 +48,7 @@ class AxiSEM3DOutput:
         self._catalogue = self._find_catalogue()
         self.simulation_name = os.path.basename(self.path_to_simulation)
 
+
     def _find_catalogue(self):
         """
         Find the catalogue file.
@@ -62,6 +64,7 @@ class AxiSEM3DOutput:
         else:
             print('Multiple catalogues were found, therefore we abort.')
             return None
+
 
     def _find_outputs(self):
         """
@@ -97,6 +100,7 @@ class AxiSEM3DOutput:
 
         return outputs
 
+
     def _search_files(self, directory, keyword, include_subdirectories=False):
         """
         Search for files containing a specific keyword in a directory.
@@ -119,6 +123,7 @@ class AxiSEM3DOutput:
                     matches.append(os.path.join(root, filename))
 
         return matches
+
 
     @property
     def catalogue(self):

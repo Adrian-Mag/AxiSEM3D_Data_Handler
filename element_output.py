@@ -8,6 +8,8 @@ import pandas as pd
 import xarray as xr
 import obspy 
 import sys
+from obspy.core.inventory import Inventory, Network, Station, Channel
+
 
 from .axisem3d_output import AxiSEM3DOutput
 
@@ -69,6 +71,92 @@ class ElementOutput(AxiSEM3DOutput):
         self.rotation_matrix = self._compute_rotation_matrix()
         self.Earth_Radius = 6371000 # m
 
+
+    def obspyfy(self, path_to_station_file: str):
+        # Create obspyfy folder if not existent already
+        obspyfy_path = self.path_to_elements_output + '/obspyfied'
+        if not os.path.exists(obspyfy_path):
+            os.mkdir(obspyfy_path) 
+        cat = self.catalogue
+        cat.write(obspyfy_path + '/cat.xml', format='QUAKEML')
+
+        stations_file_name = os.path.basename(path_to_station_file).split('.')[0]
+        inv = self.create_inventory(path_to_station_file)
+        inv.write(obspyfy_path + '/' + stations_file_name + '_inv.xml', format="stationxml")
+
+        stream = self.stream_STA(path_to_station_file)
+        stream.write(obspyfy_path + '/' + self.element_group_name + '.mseed', format="MSEED") 
+
+
+    def create_inventory(self, path_to_station_file: str):
+        ##################
+        # Create Inventory
+        ##################
+
+        networks = []
+        station_names = []
+        locations = []
+        channels_list = []
+
+        # Get path to where the new inventory will be saved, and coordinates
+
+        # Create new empty inventory
+        inv = Inventory(
+            networks=[],
+            source="Inventory from axisem STATIONS file")
+
+        # Open station file
+        stations = (pd.read_csv(path_to_station_file, 
+                    delim_whitespace=True, 
+                    header=0, 
+                    names=["name","network","latitude","longitude","useless","depth"]))
+
+        # Iterate over all stations in the stations file
+        for _, station in stations.iterrows():
+            # Create network if not already existent
+            net_exists = False
+            for network in inv:
+                if network.code == station['network']:
+                    net_exists = True
+                    net = network
+            if net_exists == False:
+                net = Network(
+                code=station['network'],
+                stations=[])
+                # add new network to inventory
+                inv.networks.append(net)
+            
+            # Create station (should be unique!)
+            sta = Station(
+            code=station['name'],
+            latitude=station['latitude'],
+            longitude=station['longitude'],
+            elevation=-station['depth'])
+            net.stations.append(sta)
+            
+            # Create the channels
+            for channel in self.detailed_channels:
+                cha = Channel(
+                code=channel,
+                location_code="",
+                latitude=station['latitude'],
+                longitude=station['longitude'],
+                elevation=-station['depth'],
+                depth=station['depth'],
+                azimuth=None,
+                dip=None,
+                sample_rate=None)
+                sta.channels.append(cha)
+            
+            # Form the lists that will be used as inputs with read_netcdf
+            # to get the stream of the wavefield data
+            networks.append(station['network'])
+            station_names.append(station['name'])
+            locations.append('') # Axisem does not use locations
+            channels_list.append(self.detailed_channels)
+
+        return inv
+    
 
     def _find_simulation_path(self, path: str):
         """Takes in the path to a station file used for axisem3d

@@ -9,6 +9,7 @@ import pandas as pd
 import netCDF4 as nc
 import os 
 import yaml
+from obspy.core.inventory import Inventory, Network, Station, Channel
 
 from .axisem3d_output import AxiSEM3DOutput
 
@@ -44,6 +45,8 @@ class StationOutput(AxiSEM3DOutput):
             station_group = output_yaml['list_of_station_groups'][0][self.station_group_name]
             self.coordinate_frame = station_group['wavefields']['coordinate_frame']
             self.channels = station_group['wavefields']['channels']        
+            self.stations_file_name = station_group['locations']['station_file']
+            self.station_file_path = self.path_to_simulation + '/input/' + self.stations_file_name 
         self.detailed_channels = self._get_detailed_channels()
         self.detailed_channels = [element.replace('1', self.coordinate_frame[0]).\
                                   replace('2', self.coordinate_frame[1]).\
@@ -55,6 +58,18 @@ class StationOutput(AxiSEM3DOutput):
                           station_name: str, 
                           channels: list = None,
                           time_limits: list = None):
+        """Load wave data at a specific station.
+
+        Args:
+            network (str): Network name
+            station_name (str): Station name
+            channels (list, optional): List of channel names. Defaults to None.
+            time_limits (list, optional): List of time limits [t_min, t_max]. Defaults to None.
+
+        Returns:
+            np.ndarray: Wave data at the station
+        """
+
         # Form the station key
         station_key = network + '.' + station_name 
         # Find the file and location within the file of the station
@@ -63,7 +78,7 @@ class StationOutput(AxiSEM3DOutput):
         in_file_index = row.values.tolist()[0][2]
         filename = 'axisem3d_synthetics.nc.rank'  + str(rank_index)
         # get wave data for this rank
-        wave_data = nc.Dataset(self.path_to_station_output + '/' + filename)['data_wave'][in_file_index].filled()
+        wave_data = nc.Dataset(self.path_to_station_output + '/' + filename)['data_wave'][int(in_file_index)].filled()
 
         if channels is None and time_limits is None:
             return wave_data
@@ -145,9 +160,15 @@ class StationOutput(AxiSEM3DOutput):
             for chn_index, chn in enumerate(selected_detailed_channels):
                 if location == '':
                     # extract data
-                    wavefield_data = self.load_data_at_station(network, station_name, channels, time_limits)
+                    try:
+                        wavefield_data = self.load_data_at_station(network, station_name, channels, time_limits)
+                    except:
+                        wavefield_data = self.load_data_at_station(network, station_name, channels, time_limits)
                     # form obspy trace
-                    trace = obspy.Trace(wavefield_data[chn_index])
+                    try:
+                        trace = obspy.Trace(wavefield_data[chn_index])
+                    except:
+                        print('a')
                     trace.stats.delta = delta
                     trace.stats.ntps = npts
                     trace.stats.network = network
@@ -202,6 +223,11 @@ class StationOutput(AxiSEM3DOutput):
 
     @property
     def starttime(self) -> UTCDateTime:
+        """Get the start time of the waveform.
+
+        Returns:
+            obspy.UTCDateTime: Start time of the waveform
+        """
         default_event_time = UTCDateTime("1970-01-01T00:00:00.0Z")
         return default_event_time + self.data_time[0]      
 
@@ -254,11 +280,105 @@ class StationOutput(AxiSEM3DOutput):
         return detailed_channels
     
 
-    def parse_to_mseed(self, channels: list = None, time_limits: list = None):
+    def parse_to_mseed(self, channels: list = None, 
+                       time_limits: list = None):
+        """Parse the data to MiniSEED format.
+
+        Args:
+            channels (list, optional): List of channel names. Defaults to None.
+            time_limits (list, optional): List of time limits [t_min, t_max]. Defaults to None.
+
+        Returns:
+            obspy.Stream: ObsPy Stream object containing the data
+        """
         station_key_list = self.rank_list['STATION_KEY'].tolist()[1:-1]
 
         # Extract the string before and after the dot
         networks = [key.split(".")[0] for key in station_key_list]
         stations = [key.split(".")[1] for key in station_key_list]
 
-        return self.stream(networks, stations, channels=channels, time_limits=time_limits)
+        return self.stream(networks, stations)
+    
+    
+    def get_inventory(self):
+        ##################
+        # Create Inventory
+        ##################
+
+        networks = []
+        station_names = []
+        locations = []
+        channels_list = []
+
+        # Get path to where the new inventory will be saved, and coordinates
+
+        # Create new empty inventory
+        inv = Inventory(
+            networks=[],
+            source="Inventory from axisem STATIONS file")
+
+        # Open station file
+        stations = (pd.read_csv(self.station_file_path, 
+                    delim_whitespace=True, 
+                    header=0, 
+                    names=["name","network","latitude","longitude","useless","depth"]))
+
+        # Iterate over all stations in the stations file
+        for _, station in stations.iterrows():
+            # Create network if not already existent
+            net_exists = False
+            for network in inv:
+                if network.code == station['network']:
+                    net_exists = True
+                    net = network
+            if net_exists == False:
+                net = Network(
+                code=station['network'],
+                stations=[])
+                # add new network to inventory
+                inv.networks.append(net)
+            
+            # Create station (should be unique!)
+            sta = Station(
+            code=station['name'],
+            latitude=station['latitude'],
+            longitude=station['longitude'],
+            elevation=-station['depth'])
+            net.stations.append(sta)
+            
+            # Create the channels
+            for channel in self.detailed_channels:
+                cha = Channel(
+                code=channel,
+                location_code="",
+                latitude=station['latitude'],
+                longitude=station['longitude'],
+                elevation=-station['depth'],
+                depth=station['depth'],
+                azimuth=None,
+                dip=None,
+                sample_rate=None)
+                sta.channels.append(cha)
+            
+            # Form the lists that will be used as inputs with read_netcdf
+            # to get the stream of the wavefield data
+            networks.append(station['network'])
+            station_names.append(station['name'])
+            locations.append('') # Axisem does not use locations
+            channels_list.append(self.detailed_channels)
+
+        return inv
+    
+    def obspyfy(self):
+        # Create obspyfy folder if not existent already
+        obspyfy_path = self.path_to_station_output + '/obspyfied'
+        if not os.path.exists(obspyfy_path):
+            os.mkdir(obspyfy_path) 
+        cat = self.catalogue
+        cat.write(obspyfy_path + '/cat.xml', format='QUAKEML')
+
+        inv = self.get_inventory()
+        inv.write(obspyfy_path + '/' + self.stations_file_name + '_inv.xml', format="stationxml")
+
+        stream = self.parse_to_mseed()
+        stream.write(obspyfy_path + '/' + self.station_group_name + '.mseed', format="MSEED") 
