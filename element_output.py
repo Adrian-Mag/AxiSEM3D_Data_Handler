@@ -12,7 +12,7 @@ import sys
 from .axisem3d_output import AxiSEM3DOutput
 
 class ElementOutput(AxiSEM3DOutput):
-    def __init__(self, path_to_element_output:str, element_group:str = None) -> None:
+    def __init__(self, path_to_element_output:str) -> None:
         """Initializes the ElementOutput object for the given path to the element output directory.
 
         Args:
@@ -39,16 +39,14 @@ class ElementOutput(AxiSEM3DOutput):
         path_to_simulation = self._find_simulation_path(path_to_element_output)
         super().__init__(path_to_simulation)
 
+        self.element_group_name = os.path.basename(path_to_element_output)
         # Get element group names, channels, and grid format from the input file
         with open(self.inparam_output, 'r') as file:
             output_yaml = yaml.load(file, Loader=yaml.FullLoader)
-            if element_group is None:
-                # If no element group is provided it will simply use the first element group that it finds
-                element_group_name = list((self.outputs['elements'].keys()))[0]
-                element_group = output_yaml['list_of_element_groups'][0][element_group_name]
-                self.coordinate_frame  = element_group['wavefields']['coordinate_frame']
-                self.channels = element_group['wavefields']['channels']
-                self.grid_format = element_group['inplane']['GLL_points_one_edge']
+            element_group = output_yaml['list_of_element_groups'][0][self.element_group_name]
+            self.coordinate_frame  = element_group['wavefields']['coordinate_frame']
+            self.channels = element_group['wavefields']['channels']
+            self.grid_format = element_group['inplane']['GLL_points_one_edge']
 
         # get lat lon of the event located on the axis
         with open(self.inparam_source, 'r') as file:
