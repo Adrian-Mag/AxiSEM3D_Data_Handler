@@ -1,3 +1,7 @@
+import matplotlib 
+matplotlib.use('tkagg')
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
 import os
 import numpy as np
 import xarray as xr
@@ -7,11 +11,11 @@ import yaml
 import pandas as pd
 import xarray as xr
 import obspy 
-import sys
 from obspy.core.inventory import Inventory, Network, Station, Channel
-
+from tqdm import tqdm
 
 from .axisem3d_output import AxiSEM3DOutput
+from AxiSEM3D_Kernels import sph2cart, cart2sph
 
 class ElementOutput(AxiSEM3DOutput):
     def __init__(self, path_to_element_output:str) -> None:
@@ -461,6 +465,12 @@ class ElementOutput(AxiSEM3DOutput):
         xda_list_element_coords = []
         dict_xda_list_element = {}
         detailed_channels = [str_byte.decode('utf-8') for str_byte in nc_files[0].list_channel.data]
+        updated_array = []
+        for element in detailed_channels:
+            letter = element[0]
+            digits = ''.join(sorted(element[1:]))
+            updated_array.append(letter + digits)
+        detailed_channels = updated_array
         elements_index_limits = [0]
         index_limit = 0
         ######dict_xda_data_wave = {}
@@ -658,3 +668,122 @@ class ElementOutput(AxiSEM3DOutput):
             return True
         else:
             return False
+
+
+    def animation(self, source_location: list, station_location: list,
+                          name: str='video', video_duration: int=20, frame_rate: int=10,
+                          resolution: int=100, R_min: float=0, R_max: float=6371000,
+                          lower_range: float = 0.5):
+        """
+        Generate an animation representing seismic data on a slice frame.
+
+        Args:
+            source_location (list): The coordinates [rad, lat, lon] of the seismic source in the Earth frame.
+            station_location (list): The coordinates [rad, lat, lon] of the station location in the Earth frame.
+            name (str, optional): The name of the output video file. Defaults to 'video'.
+            video_duration (int, optional): The duration of the video in seconds. Defaults to 20.
+            frame_rate (int, optional): The number of frames per second in the video. Defaults to 10.
+            resolution (int, optional): The resolution of the slice mesh. Defaults to 100.
+            R_min (float, optional): The minimum radius for data inclusion. Defaults to 0.
+            R_max (float, optional): The maximum radius for data inclusion. Defaults to 6371000.
+            lower_range (float, optional): The lower percentile range for the colorbar intensity. Defaults to 0.5.
+
+        Returns:
+            None
+        """
+        # Form vectors for the two points (Earth frame)
+        point1 = sph2cart(source_location[0], source_location[1], source_location[2])
+        point2 = sph2cart(station_location[0], station_location[1], station_location[2])
+
+        # Do Gram-Schmidt orthogonalization to form slice basis (Earth frame)
+        base1 = point1 / np.linalg.norm(point1)
+        base2 = point2 - np.dot(point2, base1) * base1
+        base2 /= np.linalg.norm(base2)
+
+        # Generate inplane slice mesh (Slice frame)
+        inplane_dim1 = np.linspace(-R_max, R_max, resolution)
+        inplane_dim2 = np.linspace(-R_max, R_max, resolution)
+        inplane_DIM1, inplane_DIM2 = np.meshgrid(inplane_dim1, inplane_dim2, indexing='xy')
+        # Initialize sensitivity values on the slice (Slice frame)
+        inplane_field = np.zeros((resolution, resolution, 3, len(self.data_time)))
+
+        # Load the data at all points
+        print('Loading data')     
+        pbar = tqdm(total=len(inplane_dim1) * len(inplane_dim2))
+        for index1 in range(len(inplane_dim1)):
+            for index2 in range(len(inplane_dim2)):
+                [x, y, z] = inplane_dim1[index1] * base1 + inplane_dim2[index2] * base2  # Slice frame -> Earth frame
+                rad, lat, lon = cart2sph(x, y, z)
+                if rad > R_min and rad < R_max:
+                    inplane_field[index2, index1, :, :] = self.load_data_at_point([rad, np.rad2deg(lat), np.rad2deg(lon)],
+                                                                                   channels=['U'])
+                else:
+                    inplane_field[index2, index1, :, :] = np.full((3, len(self.data_time)), np.nan)
+                pbar.update(1)
+        pbar.close()
+
+        print('Create animation')
+        # Create a figure and axis
+        cbar_min = self._find_smallest_value(np.log10(np.abs(inplane_field)), lower_range)
+        cbar_max = np.nanmax(np.log10(np.abs(inplane_field)))
+
+        fig, ax = plt.subplots()
+        contour = ax.contourf(inplane_DIM1, inplane_DIM2, 
+                              np.nan_to_num(np.log10(np.abs(inplane_field[:, :, 0, 0]))), 
+                              levels=np.linspace(cbar_min, cbar_max, 100), cmap='RdBu_r', 
+                              extend='both')
+
+        def update(frame):
+            ax.cla()
+            contour = ax.contourf(inplane_DIM1, inplane_DIM2, 
+                                  np.nan_to_num(np.log10(np.abs(inplane_field[:, :, 0, frame * frame_step]))), 
+                                  levels=np.linspace(cbar_min, cbar_max, 100), cmap='RdBu_r', extend='both')
+            plt.scatter(np.dot(point1, base1), np.dot(point1, base2))
+            plt.scatter(np.dot(point2, base1), np.dot(point2, base2))
+            print(100 * frame / (video_duration * frame_rate), '%')
+            return contour
+
+
+        cbar = plt.colorbar(contour)
+
+        cbar_ticks = np.linspace(int(cbar_min), int(cbar_max), 5) # Example tick values
+        cbar_ticklabels = [str(cbar_tick) for cbar_tick in cbar_ticks] # Example tick labels
+        cbar.set_ticks(cbar_ticks)
+        cbar.set_ticklabels(cbar_ticklabels)
+        cbar.set_label('Intensity')
+
+
+        frame_step = int(len(self.data_time) / ( video_duration * frame_rate ))
+        ani = animation.FuncAnimation(fig, update, frames=video_duration * frame_rate, interval=1e3 / frame_rate)
+        ani.save(self.path_to_elements_output + '/' + name + '_animation.mp4', writer='ffmpeg')
+
+
+    def _find_smallest_value(self, arr, percentage):
+        """
+        Find the smallest value in the array based on the given percentage.
+
+        Args:
+            arr (ndarray): The input array.
+            percentage (float): The percentage of values to consider.
+
+        Returns:
+            smallest_value (float or None): The smallest value based on the given percentage,
+                                        or None if the array is empty or contains no finite values.
+        """
+        # Flatten the array to a 1D array
+        flattened = arr[np.isfinite(arr)].flatten()
+        
+        if len(flattened) == 0:
+            return None
+
+        # Sort the flattened array in ascending order
+        sorted_arr = np.sort(flattened)
+        
+        # Compute the index that corresponds to percentage of the values
+        percentile_index = int(len(sorted_arr) * (1 - percentage))
+        
+        # Get the value at the computed index
+        smallest_value = sorted_arr[percentile_index]
+        
+        return smallest_value   
+

@@ -52,7 +52,7 @@ class StationOutput(AxiSEM3DOutput):
                                   replace('2', self.coordinate_frame[1]).\
                                   replace('3', self.coordinate_frame[2]) \
                                   for element in self.detailed_channels]
-        
+        print('a')
 
     def load_data_at_station(self, network: str, 
                           station_name: str, 
@@ -260,7 +260,7 @@ class StationOutput(AxiSEM3DOutput):
 
         U = ['U1', 'U2', 'U3']
         G = ['G11', 'G12', 'G13', 'G21', 'G22', 'G23', 'G31', 'G32', 'G33']
-        E = ['E11', 'E12', 'E13', 'E22', 'E23','E33']
+        E = ['E11', 'E22', 'E33', 'E23', 'E13','E12']
         S = ['S11', 'S12', 'S13', 'S22', 'S23', 'S33']
         R = ['R1', 'R2', 'R3']
 
