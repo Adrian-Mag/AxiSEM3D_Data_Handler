@@ -37,16 +37,21 @@ class AxiSEM3DOutput:
         Args:
             path_to_simulation (str): Path to the AxiSEM3D simulation directory.
         """
+
+        # Info about the structure of the output files
         self.path_to_simulation = path_to_simulation
         self.inparam_model = self.path_to_simulation + '/input/inparam.model.yaml'
         self.inparam_nr = self.path_to_simulation + '/input/inparam.nr.yaml'
         self.inparam_output = self.path_to_simulation + '/input/inparam.output.yaml'
         self.inparam_source = self.path_to_simulation + '/input/inparam.source.yaml'
         self.inparam_advanced = self.path_to_simulation + '/input/inparam.advanced.yaml'
-
         self.outputs = self._find_outputs()
-        self._catalogue = self._find_catalogue()
         self.simulation_name = os.path.basename(self.path_to_simulation)
+
+        # Info about the source
+        self._catalogue = self._find_catalogue()
+        # Info about model
+        self.Earth_Radius = 6371000 # m
 
 
     def _find_catalogue(self):
@@ -62,6 +67,8 @@ class AxiSEM3DOutput:
         elif len(catalogues) == 0:
             return None
         else:
+            # Currently there is no function that can check which catalogue is
+            # the correct one
             print('Multiple catalogues were found, therefore we abort.')
             return None
 

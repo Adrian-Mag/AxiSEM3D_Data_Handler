@@ -73,7 +73,6 @@ class ElementOutput(AxiSEM3DOutput):
                                   for element in self.detailed_channels]
         
         self.rotation_matrix = self._compute_rotation_matrix()
-        self.Earth_Radius = 6371000 # m
 
 
     def obspyfy(self, path_to_station_file: str):
@@ -208,7 +207,7 @@ class ElementOutput(AxiSEM3DOutput):
             stalat = station['latitude']
             stalon = station['longitude']
             stadepth = station['depth']
-            starad = 6371e3 - stadepth
+            starad = self.Earth_Radius - stadepth
             # get the data at this station (assuming RTZ components)
             wave_data = self.load_data_at_point([starad, stalat, stalon],
                                                 channels, 
@@ -368,7 +367,7 @@ class ElementOutput(AxiSEM3DOutput):
         """      
         
         # Transform geographical to cylindrical coords in source frame
-        s, z, phi = self._geo_to_cyl(point)
+        s, z, _ = self._geo_to_cyl(point)
         # spherical coordinates will be used for the GLL interpolation
         [r, theta] = self._cart_to_polar(s,z)
 
@@ -395,6 +394,7 @@ class ElementOutput(AxiSEM3DOutput):
             for i in range(len(self.elements_index_limits) - 1):
                 if self.elements_index_limits[i] <= element_index < self.elements_index_limits[i+1]:
                     file_index = i
+                    break
             # get the element points
             element_points = self.list_element_coords[element_index]
             radial_element_GLL_points = self._cart_to_polar(element_points[[0,1,2]][:,0], 

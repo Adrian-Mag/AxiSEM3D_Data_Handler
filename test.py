@@ -1,20 +1,22 @@
 from .element_output import ElementOutput
 from .station_output import StationOutput
+from line_profiler import LineProfiler
 
 
-path_to_element_output = "/disks/data/PhD/CMB/simu3D_CMB_element/test/output/elements/mantle"
+path_to_element_output = "/disks/data/PhD/CMB/simu1D_element/BACKWARD_DATA/output/elements/entire_earth"
 
-point = [6371000, 0, 30]
-#channels = ['E']
-#fourier_order = 3
-element_obj = ElementOutput(path_to_element_output)
-#element_obj.stream(point=point, channels=channels).plot()
-#element_obj.obspyfy('/disks/data/PhD/CMB/input3D_CMB_element/STA_10DEG_CROSS.txt')
-element_obj.animation([6371000,0,0], [6371000,0,30], R_min=3480000, resolution=200, name='range_80', lower_range=0.7)
+def profile_load_data_at_point():
+    element_obj = ElementOutput(path_to_element_output=path_to_element_output)
+    element_obj.load_data_at_point([6371000, 0, 0])
+    # element_obj.animation([6371000, 0, 0], [6371000, 0, 30], R_min=3400000, resolution=50)    
 
+lp = LineProfiler()
+lp.add_function(ElementOutput.load_data_at_point)
+lp.add_function(ElementOutput.inplane_interpolation)
+lp.add_function(ElementOutput._read_element_data)
+# Add other internal methods to profile
 
-#path_to_station_output = '/disks/data/PhD/CMB/simu3D_CMB_element/test/output/stations/Station_grid'
+lp_wrapper = lp(profile_load_data_at_point)
+lp_wrapper()
 
-#station_obj = StationOutput(path_to_station_output)
-#print(station_obj.stream(networks='A', station_names='22'))
-#station_obj.obspyfy()
+lp.print_stats()

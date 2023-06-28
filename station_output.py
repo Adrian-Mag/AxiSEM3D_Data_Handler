@@ -52,7 +52,6 @@ class StationOutput(AxiSEM3DOutput):
                                   replace('2', self.coordinate_frame[1]).\
                                   replace('3', self.coordinate_frame[2]) \
                                   for element in self.detailed_channels]
-        print('a')
 
     def load_data_at_station(self, network: str, 
                           station_name: str, 
