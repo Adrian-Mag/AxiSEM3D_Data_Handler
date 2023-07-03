@@ -187,8 +187,7 @@ class ElementOutput(AxiSEM3DOutput):
 
     def stream_STA(self, path_to_station_file: str, 
                    channels: list = None,
-                   time_limits: list = None, 
-                   fourier_order: int = None) -> obspy.Stream:
+                   time_limits: list = None) -> obspy.Stream:
         """Takes in the path to a station file used for axisem3d
         and returns a stream with the wavefields computed at all stations
 
@@ -198,7 +197,9 @@ class ElementOutput(AxiSEM3DOutput):
         Returns:
             obspy.stream: stream
         """        
-        
+        # Get time slices from time limits
+        time_slices = np.where((self.data_time >= time_limits[0]) & (self.data_time <= time_limits[1]))
+
         # Open station file
         stations = (pd.read_csv(path_to_station_file, 
                     delim_whitespace=True, 
@@ -215,8 +216,7 @@ class ElementOutput(AxiSEM3DOutput):
             wave_data = self.load_data_at_point(point=[starad, stalat, stalon],
                                                 coord_in_deg=True,
                                                 channels=channels, 
-                                                time_limits=time_limits, 
-                                                fourier_order=fourier_order)
+                                                time_slices=time_slices)
             # COnstruct metadata
             delta = self.data_time[1] - self.data_time[0]
             npts = len(self.data_time)
@@ -244,8 +244,7 @@ class ElementOutput(AxiSEM3DOutput):
 
     def stream(self, point: list, coord_in_deg: bool = True, 
                channels: list = None,
-               time_limits: list = None, 
-               fourier_order: int = None) -> obspy.Stream:
+               time_limits: list = None) -> obspy.Stream:
         """
         Generate a stream with the wavefields computed at all stations given the location.
 
@@ -269,6 +268,12 @@ class ElementOutput(AxiSEM3DOutput):
         Returns:
             obspy.Stream: A stream containing the wavefields computed at all stations.
         """      
+        # Get time slices from time limits
+        if time_limits is not None:
+            time_slices = np.where((self.data_time >= time_limits[0]) & (self.data_time <= time_limits[1]))
+        else:
+            time_slices = None
+
         if coord_in_deg:
             point[1] = np.deg2rad(point[1])
             point[2] = np.deg2rad(point[2])
@@ -278,8 +283,7 @@ class ElementOutput(AxiSEM3DOutput):
         # get the data at this station (assuming RTZ components)
         wave_data = self.load_data_at_point(point=point,
                                             channels=channels, 
-                                            time_limits=time_limits, 
-                                            fourier_order=fourier_order,
+                                            time_slices=time_slices, 
                                             coord_in_deg=False)
         # Construct metadata 
         delta = self.data_time[1] - self.data_time[0]
@@ -307,10 +311,9 @@ class ElementOutput(AxiSEM3DOutput):
         return stream
     
 
-    def load_data_at_point(self, point: list, coord_in_deg: bool = True, 
+    def load_data_at_point(self, point: list, coord_in_deg: bool = False, 
                         channels: list = None,
-                        time_limits: list = None, 
-                        fourier_order: int = None) -> np.ndarray:
+                        time_slices: list = None) -> np.ndarray:
         """
         Expand an in-plane point into the longitudinal direction using the Fourier expansion.
 
@@ -324,10 +327,7 @@ class ElementOutput(AxiSEM3DOutput):
                                         Defaults to True.
             channels (list, optional): List of channels to include.
                                     Defaults to None, which includes all channels.
-            time_limits (list, optional): Time limits for the data.
-                                        It should be a list with two elements:
-                                        - start time in seconds (float)
-                                        - end time in seconds (float)
+            time_slices (list, optional): Points on the time axis where data should be loaded
                                         Defaults to None, which includes all times.
             fourier_order (int, optional): Maximum Fourier order.
                                         Defaults to None.
@@ -342,16 +342,27 @@ class ElementOutput(AxiSEM3DOutput):
 
         _, _, phi = self._geo_to_cyl(point)
 
+        # Get channel slices from channels
+        if channels is not None:
+            if(self._check_elements(channels, self.channels)):
+                # Filter by channel chosen
+                channel_slices = []
+                for channel in channels:
+                    channel_slices += [index for index, element in enumerate(self.detailed_channels) if element.startswith(channel)]
+            else:
+                raise Exception('Only the following channels exist: ' + ', '.join(self.channels))
+        else:
+            channel_slices = None
+
         # Interpolate the data in-plane
-        interpolated_data = self.inplane_interpolation(point, channels, time_limits)
+        interpolated_data = self._inplane_interpolation(point=point, channel_slices=channel_slices, 
+                                                        time_slices=time_slices)
 
         # Set complex type
         complex_type = interpolated_data.dtype if np.iscomplexobj(interpolated_data) else np.complex128
 
         # Find max Fourier order
         max_fourier_order = len(interpolated_data[:, 0, 0]) // 2
-        if fourier_order is not None and fourier_order < max_fourier_order:
-            max_fourier_order = fourier_order // 2 * 2
 
         # Initialize result with 0th order
         result = interpolated_data[0].copy()
@@ -369,8 +380,8 @@ class ElementOutput(AxiSEM3DOutput):
         return result
 
 
-    def inplane_interpolation(self, point: list, channels: list = None, 
-                              time_limits: list = None)-> np.ndarray:
+    def _inplane_interpolation(self, point: list, channel_slices: list = None, 
+                              time_slices: list = None)-> np.ndarray:
         """Takes in a point in spherical coordinates in the real earth frame
         and outputs the displacement data in time for all the available channels
         in the form of a NumPy array.
@@ -429,10 +440,11 @@ class ElementOutput(AxiSEM3DOutput):
                                                            element_points[[0,3,6]][:,1])[1]
 
             # Now we get the data
-            data_wave = self._read_element_data(element_na, file_index, channels, time_limits)
+            data_wave = self._read_element_data(element_na=element_na, file_index=file_index,
+                                                channel_slices=channel_slices, time_slices=time_slices)
             # finally we interpolate at our point
             interpolated_data = np.zeros(data_wave[:,0,:,:].shape)
-            # Now we interpolate using GLL
+            # Now we interpolate using GLLelement_na, file_index, channels, time_limits
             for i in range(3):
                 for j in range(3):
                     interpolated_data += self._lagrange(r, radial_element_GLL_points[j], radial_element_GLL_points) * \
@@ -619,7 +631,7 @@ class ElementOutput(AxiSEM3DOutput):
 
 
     def _read_element_data(self, element_na, file_index: int, 
-                           channels: list = None, time_limits: list = None):
+                           channel_slices: list=None, time_slices: list=None):
         """Reads the element data from the specified file and returns the wave data.
 
         Args:
@@ -647,42 +659,16 @@ class ElementOutput(AxiSEM3DOutput):
 
         Note that the wave data is assumed to be stored in the `files` attribute, which is a list of opened netCDF files.
         """
-        wave_data = self.files[file_index]['data_wave__NaG=%d' % element_na[2]][element_na[3]].values
-        if channels is None and time_limits is None:
-            return wave_data
-        elif channels is None and time_limits is not None:
-            # Check if times desired are available
-            if np.min(self.data_time) < time_limits[0] and np.max(self.data_time) > time_limits[1]:
-                # Find the indices of elements between t_min and t_max
-                indices = np.where((self.data_time >= time_limits[0]) & (self.data_time <= time_limits[1]))
-                return wave_data[:,:,:,indices]
-            else:
-                raise Exception('Times must be between: ' + str(min(self.data_time)) + ' and ' + str(max(self.data_time)))
-        elif channels is not None and time_limits is None:
-            if(self._check_elements(channels, self.channels)):
-                # Filter by channels chosen
-                channel_indices = []
-                for channel in channels:
-                    channel_indices += [index for index, element in enumerate(self.detailed_channels) if element.startswith(channel)]
-                return wave_data[:,:,channel_indices,:]
-            else:
-                raise Exception('Only the following channels exist: ' + ', '.join(self.channels))
-        else:            
-            # Check if times desired are available
-            if np.min(self.data_time) < time_limits[0] and np.max(self.data_time) > time_limits[1]:
-                # Find the indices of elements between t_min and t_max
-                indices = np.where((self.data_time >= time_limits[0]) & (self.data_time <= time_limits[1]))
-                wave_data = wave_data[:,:,:,indices]
-            else:
-                raise Exception('Times must be between: ' + str(min(self.data_time)) + ' and ' + str(max(self.data_time)))
-            if(self._check_elements(channels, self.channels)):
-                # Filter by channels chosen
-                channel_indices = []
-                for channel in channels:
-                    channel_indices += [index for index, element in enumerate(self.detailed_channels) if element.startswith(channel)]
-                return wave_data[:,:,channel_indices,:]
-            else:
-                raise Exception('Only the following channels exist: ' + ', '.join(self.channels))
+        if channel_slices is None and time_slices is None:
+            wave_data = self.files[file_index]['data_wave__NaG=%d' % element_na[2]][element_na[3]].values
+        elif channel_slices is not None and time_slices is None:
+            wave_data = self.files[file_index]['data_wave__NaG=%d' % element_na[2]][element_na[3]][:, :, channel_slices, :].values
+        elif channel_slices is None and time_slices is not None:
+            wave_data = self.files[file_index]['data_wave__NaG=%d' % element_na[2]][element_na[3]][:, :, :, time_slices].values
+        elif channel_slices is not None and time_slices is not None:
+            wave_data = self.files[file_index]['data_wave__NaG=%d' % element_na[2]][element_na[3]][:, :, channel_slices, time_slices].values
+        
+        return wave_data
 
 
     def _check_elements(self, list1, list2):
@@ -701,18 +687,19 @@ class ElementOutput(AxiSEM3DOutput):
             return True
         else:
             return False
-
+    
 
     def animation(self, source_location: list, station_location: list, channels: list=['U'],
                           name: str='video', video_duration: int=20, frame_rate: int=10,
                           resolution: int=50, R_min: float=0, R_max: float=6371000,
-                          lower_range: float = 0.5, paralel_processing: bool=True, timeit: bool=False):
+                          lower_range: float=0.1, upper_range: float=0.9,
+                          paralel_processing: bool=True, timeit: bool=False):
         """
         Generate an animation representing seismic data on a slice frame.
 
         Args:
-            source_location (list): The coordinates [rad, lat, lon] of the seismic source in the Earth frame.
-            station_location (list): The coordinates [rad, lat, lon] of the station location in the Earth frame.
+            source_location (list): The coordinates [depth, lat, lon] of the seismic source in the Earth frame.
+            station_location (list): The coordinates [depth, lat, lon] of the station location in the Earth frame.
             name (str, optional): The name of the output video file. Defaults to 'video'.
             video_duration (int, optional): The duration of the video in seconds. Defaults to 20.
             frame_rate (int, optional): The number of frames per second in the video. Defaults to 10.
@@ -724,6 +711,11 @@ class ElementOutput(AxiSEM3DOutput):
         Returns:
             None
         """
+        # Get time slices from frame rate and video_duration assuming that the
+        # video will include the entire time axis 
+        no_frames = frame_rate*video_duration
+        time_slices = np.round(np.linspace(0, len(self.data_time) - 1, no_frames)).astype(int)
+
         if timeit is True:
             start_time = time.time()
         print('Loading data')
@@ -732,17 +724,16 @@ class ElementOutput(AxiSEM3DOutput):
             base1, base2, inplane_DIM1, \
             inplane_DIM2 = self.load_data_on_slice_parallel(source_location, station_location, 
                                                         R_max, R_min, resolution, channels, 
-                                                        return_slice=True)
+                                                        time_slices=time_slices, return_slice=True)
         else:
             inplane_field, point1, point2, \
             base1, base2, inplane_DIM1, \
             inplane_DIM2 = self.load_data_on_slice_serial(source_location, station_location, 
                                                         R_max, R_min, resolution, channels, 
-                                                        return_slice=True)
+                                                        time_slices=time_slices, return_slice=True)
         print('Create animation')
         # Create a figure and axis
-        cbar_min = self._find_smallest_value(np.log10(np.abs(inplane_field)), lower_range)
-        cbar_max = np.nanmax(np.log10(np.abs(inplane_field)))
+        cbar_min, cbar_max = self._find_range(np.log10(np.abs(inplane_field)), lower_range, upper_range)
 
         fig, ax = plt.subplots()
         contour = ax.contourf(inplane_DIM1, inplane_DIM2, 
@@ -753,11 +744,11 @@ class ElementOutput(AxiSEM3DOutput):
         def update(frame):
             ax.cla()
             contour = ax.contourf(inplane_DIM1, inplane_DIM2, 
-                                  np.nan_to_num(np.log10(np.abs(inplane_field[:, :, 0, frame * frame_step]))), 
+                                  np.nan_to_num(np.log10(np.abs(inplane_field[:, :, 0, frame]))), 
                                   levels=np.linspace(cbar_min, cbar_max, 100), cmap='RdBu_r', extend='both')
             plt.scatter(np.dot(point1, base1), np.dot(point1, base2))
             plt.scatter(np.dot(point2, base1), np.dot(point2, base2))
-            print(100 * frame / (video_duration * frame_rate), '%')
+            print(100 * frame / no_frames, '%')
             return contour
 
 
@@ -778,12 +769,13 @@ class ElementOutput(AxiSEM3DOutput):
             print(end_time - start_time)
 
 
-    def _load_data_at_point_parallel_wrapper(self, point, channels, indices):
-        return (self.load_data_at_point(point, channels=channels), indices)
+    def _load_data_at_point_parallel_wrapper(self, point, channels, time_slices, indices):
+        return (self.load_data_at_point(point=point, channels=channels, time_slices=time_slices, 
+                                        coord_in_deg=False), indices)
 
     
     def load_data_on_slice_parallel(self, source_location, station_location,
-                                R_max, R_min, resolution, channels, 
+                                R_max, R_min, resolution, channels, time_slices,
                                 return_slice: bool=False):
         """
         Load data on a slice of points within a specified radius range and
@@ -815,7 +807,7 @@ class ElementOutput(AxiSEM3DOutput):
             inplane_DIM1, inplane_DIM2 = self._create_slice(source_location, station_location, 
                                                             R_max, R_min, resolution, return_slice=True)
         
-        inplane_field = np.zeros((resolution, resolution, 3, len(self.data_time)))
+        inplane_field = np.zeros((resolution, resolution, 3, len(time_slices)))
 
     
         pbar = tqdm(total=len(filtered_indices))
@@ -829,7 +821,7 @@ class ElementOutput(AxiSEM3DOutput):
                 batch_indices = filtered_indices[i*batch_size:(i+1)*batch_size]
                 batch_points = filtered_slice_points[i*batch_size:(i+1)*batch_size]
                 
-                futures = [executor.submit(self._load_data_at_point_parallel_wrapper, point, channels, indices) \
+                futures = [executor.submit(self._load_data_at_point_parallel_wrapper, point, channels, time_slices, indices) \
                         for point, indices in zip(batch_points, batch_indices)]
                 
                 for future in concurrent.futures.as_completed(futures):
@@ -844,7 +836,7 @@ class ElementOutput(AxiSEM3DOutput):
                 batch_indices = filtered_indices[-remaining_tasks:]
                 batch_points = filtered_slice_points[-remaining_tasks:]
                 
-                futures = [executor.submit(self._load_data_at_point_parallel_wrapper, point, channels, indices) \
+                futures = [executor.submit(self._load_data_at_point_parallel_wrapper, point, channels, time_slices, indices) \
                         for point, indices in zip(batch_points, batch_indices)]
                 
                 for future in concurrent.futures.as_completed(futures):
@@ -867,7 +859,7 @@ class ElementOutput(AxiSEM3DOutput):
 
     def load_data_on_slice_serial(self, source_location: list, station_location: list, 
                                   R_max: float, R_min: float, resolution: int, 
-                                  channels: list, return_slice: bool=False):
+                                  channels: list, time_slices: list, return_slice: bool=False):
         """
         Load data on a slice of points within a specified radius range and resolution.
         Not using multi-processing!
@@ -895,10 +887,10 @@ class ElementOutput(AxiSEM3DOutput):
             point1, point2, base1, base2, \
             inplane_DIM1, inplane_DIM2 = self._create_slice(source_location, station_location, 
                                                             R_max, R_min, resolution, return_slice=True)
-        inplane_field = np.zeros((resolution, resolution, 3, len(self.data_time)))
+        inplane_field = np.zeros((resolution, resolution, 3, len(time_slices)))
         pbar = tqdm(total=len(filtered_indices))
         for [index1, index2], point in zip(filtered_indices, filtered_slice_points):
-            inplane_field[index1, index2, :, :] = self.load_data_at_point(point, channels=channels)
+            inplane_field[index1, index2, :, :] = self.load_data_at_point(point=point, channels=channels, coord_in_deg=False, time_slices=time_slices)
             pbar.update(1)
         pbar.close()
 
@@ -971,7 +963,7 @@ class ElementOutput(AxiSEM3DOutput):
                     inplane_DIM1, inplane_DIM2]
 
 
-    def _find_smallest_value(self, arr, percentage):
+    def _find_range(self, arr, percentage_min, percentage_max):
         """
         Find the smallest value in the array based on the given percentage.
 
@@ -984,16 +976,21 @@ class ElementOutput(AxiSEM3DOutput):
                                         or None if the array is empty or contains no finite values.
         """
         # Flatten the array to a 1D array
-        if np.isnan(arr).all() or np.isinf(arr).all():
-            return None
-    
         flattened = arr[np.isfinite(arr)].flatten()
         
         if len(flattened) == 0:
             return None
+
+        # Sort the flattened array in ascending order
+        sorted_arr = np.sort(flattened)
         
-        percentile_index = int(len(flattened) * (1 - percentage))
-        sorted_arr = np.partition(flattened, percentile_index)
+        # Compute the index that corresponds to percentage of the values
+        percentile_index_min = int(len(sorted_arr) * percentage_min)        
+        percentile_index_max= int(len(sorted_arr) * percentage_max)
         
-        return sorted_arr[percentile_index]
+        # Get the value at the computed index
+        smallest_value = sorted_arr[percentile_index_min]
+        biggest_value = sorted_arr[percentile_index_max]
+        
+        return [smallest_value, biggest_value] 
 
