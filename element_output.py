@@ -13,6 +13,8 @@ import xarray as xr
 import obspy 
 from obspy.core.inventory import Inventory, Network, Station, Channel
 from tqdm import tqdm
+import concurrent.futures
+import time
 
 from .axisem3d_output import AxiSEM3DOutput
 from AxiSEM3D_Kernels import sph2cart, cart2sph
@@ -556,8 +558,7 @@ class ElementOutput(AxiSEM3DOutput):
         seismic frame.
 
         Args:
-            point (list): [radial position in m, latitude in radians, longitude
-            in radians]
+            point (list): [radial position in m, latitude in rad, longitude in rad]
 
         Returns:
             list: [radial position in m, vertical position in m, azimuth from
@@ -702,10 +703,10 @@ class ElementOutput(AxiSEM3DOutput):
             return False
 
 
-    def animation(self, source_location: list, station_location: list,
+    def animation(self, source_location: list, station_location: list, channels: list=['U'],
                           name: str='video', video_duration: int=20, frame_rate: int=10,
-                          resolution: int=100, R_min: float=0, R_max: float=6371000,
-                          lower_range: float = 0.5):
+                          resolution: int=50, R_min: float=0, R_max: float=6371000,
+                          lower_range: float = 0.5, paralel_processing: bool=True, timeit: bool=False):
         """
         Generate an animation representing seismic data on a slice frame.
 
@@ -723,38 +724,21 @@ class ElementOutput(AxiSEM3DOutput):
         Returns:
             None
         """
-        # Form vectors for the two points (Earth frame)
-        point1 = sph2cart(source_location[0], source_location[1], source_location[2])
-        point2 = sph2cart(station_location[0], station_location[1], station_location[2])
-
-        # Do Gram-Schmidt orthogonalization to form slice basis (Earth frame)
-        base1 = point1 / np.linalg.norm(point1)
-        base2 = point2 - np.dot(point2, base1) * base1
-        base2 /= np.linalg.norm(base2)
-
-        # Generate inplane slice mesh (Slice frame)
-        inplane_dim1 = np.linspace(-R_max, R_max, resolution)
-        inplane_dim2 = np.linspace(-R_max, R_max, resolution)
-        inplane_DIM1, inplane_DIM2 = np.meshgrid(inplane_dim1, inplane_dim2, indexing='xy')
-        # Initialize sensitivity values on the slice (Slice frame)
-        inplane_field = np.zeros((resolution, resolution, 3, len(self.data_time)))
-
-        # Load the data at all points
-        print('Loading data')     
-        pbar = tqdm(total=len(inplane_dim1) * len(inplane_dim2))
-        for index1 in range(len(inplane_dim1)):
-            for index2 in range(len(inplane_dim2)):
-                [x, y, z] = inplane_dim1[index1] * base1 + inplane_dim2[index2] * base2  # Slice frame -> Earth frame
-                rad, lat, lon = cart2sph(x, y, z)
-                if rad > R_min and rad < R_max:
-                    inplane_field[index2, index1, :, :] = self.load_data_at_point(point=[rad, lat, lon],
-                                                                                  coord_in_deg=False, 
-                                                                                  channels=['U'])
-                else:
-                    inplane_field[index2, index1, :, :] = np.full((3, len(self.data_time)), np.nan)
-                pbar.update(1)
-        pbar.close()
-
+        if timeit is True:
+            start_time = time.time()
+        print('Loading data')
+        if paralel_processing is True:
+            inplane_field, point1, point2, \
+            base1, base2, inplane_DIM1, \
+            inplane_DIM2 = self.load_data_on_slice_parallel(source_location, station_location, 
+                                                        R_max, R_min, resolution, channels, 
+                                                        return_slice=True)
+        else:
+            inplane_field, point1, point2, \
+            base1, base2, inplane_DIM1, \
+            inplane_DIM2 = self.load_data_on_slice_serial(source_location, station_location, 
+                                                        R_max, R_min, resolution, channels, 
+                                                        return_slice=True)
         print('Create animation')
         # Create a figure and axis
         cbar_min = self._find_smallest_value(np.log10(np.abs(inplane_field)), lower_range)
@@ -789,6 +773,202 @@ class ElementOutput(AxiSEM3DOutput):
         frame_step = int(len(self.data_time) / ( video_duration * frame_rate ))
         ani = animation.FuncAnimation(fig, update, frames=video_duration * frame_rate, interval=1e3 / frame_rate)
         ani.save(self.path_to_elements_output + '/' + name + '_animation.mp4', writer='ffmpeg')
+        if timeit is True:
+            end_time = time.time()
+            print(end_time - start_time)
+
+
+    def _load_data_at_point_parallel_wrapper(self, point, channels, indices):
+        return (self.load_data_at_point(point, channels=channels), indices)
+
+    
+    def load_data_on_slice_parallel(self, source_location, station_location,
+                                R_max, R_min, resolution, channels, 
+                                return_slice: bool=False):
+        """
+        Load data on a slice of points within a specified radius range and
+        resolution using parallel processing and batching.
+
+        Args:
+            source_location (list): The source location [depth, latitude,
+            longitude] in degrees. station_location (list): The station location
+            [depth, latitude, longitude] in degrees. R_max (float): The maximum
+            radius for the slice in Earth radii. R_min (float): The minimum
+            radius for the slice in Earth radii. resolution (int): The
+            resolution of the slice (number of points along each dimension).
+            channels (list): The channels of data to load. return_slice (bool,
+            optional): Whether to return additional slice information. 
+                                        Defaults to False.
+
+        Returns:
+            numpy.ndarray or list: An ndarray containing the loaded data on the
+            slice,
+                                and optionally, additional slice information.
+
+        """
+        if return_slice is False:
+            filtered_indices, filtered_slice_points = self._create_slice(source_location, station_location, 
+                                                                        R_max, R_min, resolution)
+        else:
+            filtered_indices, filtered_slice_points, \
+            point1, point2, base1, base2, \
+            inplane_DIM1, inplane_DIM2 = self._create_slice(source_location, station_location, 
+                                                            R_max, R_min, resolution, return_slice=True)
+        
+        inplane_field = np.zeros((resolution, resolution, 3, len(self.data_time)))
+
+    
+        pbar = tqdm(total=len(filtered_indices))
+
+        with concurrent.futures.ProcessPoolExecutor() as executor:
+            batch_size = 1000  # Adjust the batch size as needed
+            num_batches = len(filtered_indices) // batch_size
+            remaining_tasks = len(filtered_indices) % batch_size
+            
+            for i in range(num_batches):
+                batch_indices = filtered_indices[i*batch_size:(i+1)*batch_size]
+                batch_points = filtered_slice_points[i*batch_size:(i+1)*batch_size]
+                
+                futures = [executor.submit(self._load_data_at_point_parallel_wrapper, point, channels, indices) \
+                        for point, indices in zip(batch_points, batch_indices)]
+                
+                for future in concurrent.futures.as_completed(futures):
+                    [index1, index2] = future.result()[1]
+                    inplane_field[int(index1), int(index2), :, :] = future.result()[0]
+                    
+                
+                    pbar.update(1)
+            
+            # Process the remaining tasks (if any)
+            if remaining_tasks > 0:
+                batch_indices = filtered_indices[-remaining_tasks:]
+                batch_points = filtered_slice_points[-remaining_tasks:]
+                
+                futures = [executor.submit(self._load_data_at_point_parallel_wrapper, point, channels, indices) \
+                        for point, indices in zip(batch_points, batch_indices)]
+                
+                for future in concurrent.futures.as_completed(futures):
+                    [index1, index2] = future.result()[1]
+                    inplane_field[int(index1), int(index2), :, :] = future.result()[0]
+                    
+                
+                    pbar.update(1)
+
+    
+        pbar.close()
+
+        if return_slice is False:
+            return inplane_field
+        else:
+            return [inplane_field, point1, point2, 
+                    base1, base2, 
+                    inplane_DIM1, inplane_DIM2]
+
+
+    def load_data_on_slice_serial(self, source_location: list, station_location: list, 
+                                  R_max: float, R_min: float, resolution: int, 
+                                  channels: list, return_slice: bool=False):
+        """
+        Load data on a slice of points within a specified radius range and resolution.
+        Not using multi-processing!
+
+        Args:
+            source_location (list): The source location [depth, latitude, longitude] in degrees.
+            station_location (list): The station location [depth, latitude, longitude] in degrees.
+            R_max (float): The maximum radius for the slice in Earth radii.
+            R_min (float): The minimum radius for the slice in Earth radii.
+            resolution (int): The resolution of the slice (number of points along each dimension).
+            channels (list): The channels of data to load.
+            return_slice (bool, optional): Whether to return additional slice information. 
+                                        Defaults to False.
+
+        Returns:
+            numpy.ndarray or list: An ndarray containing the loaded data on the slice,
+                                and optionally, additional slice information.
+
+        """
+        if return_slice is False:
+            filtered_indices, filtered_slice_points = self._create_slice(source_location, station_location, 
+                                                                        R_max, R_min, resolution)
+        else:
+            filtered_indices, filtered_slice_points, \
+            point1, point2, base1, base2, \
+            inplane_DIM1, inplane_DIM2 = self._create_slice(source_location, station_location, 
+                                                            R_max, R_min, resolution, return_slice=True)
+        inplane_field = np.zeros((resolution, resolution, 3, len(self.data_time)))
+        pbar = tqdm(total=len(filtered_indices))
+        for [index1, index2], point in zip(filtered_indices, filtered_slice_points):
+            inplane_field[index1, index2, :, :] = self.load_data_at_point(point, channels=channels)
+            pbar.update(1)
+        pbar.close()
+
+        if return_slice is False:
+            return inplane_field
+        else:
+            return [inplane_field, point1, point2, 
+                    base1, base2, 
+                    inplane_DIM1, inplane_DIM2]
+
+
+    def _create_slice(self, source_location: list, station_location: list, 
+                      R_max: float, R_min: float, resolution: int,
+                      return_slice: bool=False):
+        """
+        Create a mesh for a slice of Earth within a specified radius range and resolution.
+
+        Args:
+            source_location (list): The source location [depth, latitude, longitude] in degrees.
+            station_location (list): The station location [depth, latitude, longitude] in degrees.
+            R_max (float): The maximum radius for the slice in Earth radii.
+            R_min (float): The minimum radius for the slice in Earth radii.
+            resolution (int): The resolution of the slice (number of points along each dimension).
+            return_slice (bool, optional): Whether to return additional slice information. 
+                                        Defaults to False.
+
+        Returns:
+            list: A list containing filtered indices and slice points, and optionally, additional slice information.
+
+        """
+            # Transform from depth lat lon in deg to rad lat lon in rad
+        source_location[0] = self.Earth_Radius - source_location[0]
+        source_location[1] = np.deg2rad(source_location[1])
+        source_location[2] = np.deg2rad(source_location[2])
+        station_location[0] = self.Earth_Radius - station_location[0]
+        station_location[1] = np.deg2rad(station_location[1])
+        station_location[2] = np.deg2rad(station_location[2])
+        # Form vectors for the two points (Earth frame)
+        point1 = sph2cart(source_location[0], source_location[1], source_location[2])
+        point2 = sph2cart(station_location[0], station_location[1], station_location[2])
+
+        # Do Gram-Schmidt orthogonalization to form slice basis (Earth frame)
+        base1 = point1 / np.linalg.norm(point1)
+        base2 = point2 - np.dot(point2, base1) * base1
+        base2 /= np.linalg.norm(base2)
+
+        # Generate index mesh
+        indices_dim1 = np.arange(resolution)
+        indices_dim2 = np.arange(resolution)
+        # Generate in-plane mesh
+        inplane_dim1 = np.linspace(-R_max, R_max, resolution)
+        inplane_dim2 = np.linspace(-R_max, R_max, resolution)
+        inplane_DIM1, inplane_DIM2 = np.meshgrid(inplane_dim1, inplane_dim2, indexing='ij')
+        radii = np.sqrt(inplane_DIM1*inplane_DIM1 + inplane_DIM2*inplane_DIM2)
+
+        filtered_indices = []
+        filtered_slice_points = []
+        # Generate slice mesh points
+        for index1 in indices_dim1:
+            for index2 in indices_dim2:
+                if radii[index1, index2] < R_max and radii[index1, index2] > R_min:
+                    [x, y, z] = inplane_dim1[index1] * base1 + inplane_dim2[index2] * base2  # Slice frame -> Earth frame
+                    filtered_slice_points.append(cart2sph(x, y, z))
+                    filtered_indices.append([index1, index2])
+        if return_slice is False:
+            return [filtered_indices, filtered_slice_points]
+        else:
+            return [filtered_indices, filtered_slice_points,
+                    point1, point2, base1, base2, 
+                    inplane_DIM1, inplane_DIM2]
 
 
     def _find_smallest_value(self, arr, percentage):
@@ -804,19 +984,16 @@ class ElementOutput(AxiSEM3DOutput):
                                         or None if the array is empty or contains no finite values.
         """
         # Flatten the array to a 1D array
+        if np.isnan(arr).all() or np.isinf(arr).all():
+            return None
+    
         flattened = arr[np.isfinite(arr)].flatten()
         
         if len(flattened) == 0:
             return None
-
-        # Sort the flattened array in ascending order
-        sorted_arr = np.sort(flattened)
         
-        # Compute the index that corresponds to percentage of the values
-        percentile_index = int(len(sorted_arr) * (1 - percentage))
+        percentile_index = int(len(flattened) * (1 - percentage))
+        sorted_arr = np.partition(flattened, percentile_index)
         
-        # Get the value at the computed index
-        smallest_value = sorted_arr[percentile_index]
-        
-        return smallest_value   
+        return sorted_arr[percentile_index]
 
