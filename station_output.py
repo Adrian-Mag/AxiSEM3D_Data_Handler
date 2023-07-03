@@ -377,7 +377,7 @@ class StationOutput(AxiSEM3DOutput):
         cat.write(obspyfy_path + '/cat.xml', format='QUAKEML')
 
         inv = self.get_inventory()
-        inv.write(obspyfy_path + '/' + self.stations_file_name + '_inv.xml', format="stationxml")
+        inv.write(obspyfy_path + '/' + self.stations_file_name.split('.')[0] + '_inv.xml', format="stationxml")
 
         stream = self.parse_to_mseed()
         stream.write(obspyfy_path + '/' + self.station_group_name + '.mseed', format="MSEED") 

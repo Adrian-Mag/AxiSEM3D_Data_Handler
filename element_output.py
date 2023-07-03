@@ -61,6 +61,7 @@ class ElementOutput(AxiSEM3DOutput):
             # assume a single point source
             source = source_yaml['list_of_sources'][0][source_name]
             [self.source_lat, self.source_lon]=  source['location']['latitude_longitude']
+            self.source_depth = float(source['location']['depth'])
 
         self.path_to_elements_output = path_to_element_output
         # Get metadata 
@@ -209,10 +210,11 @@ class ElementOutput(AxiSEM3DOutput):
             stadepth = station['depth']
             starad = self.Earth_Radius - stadepth
             # get the data at this station (assuming RTZ components)
-            wave_data = self.load_data_at_point([starad, stalat, stalon],
-                                                channels, 
-                                                time_limits, 
-                                                fourier_order)
+            wave_data = self.load_data_at_point(point=[starad, stalat, stalon],
+                                                coord_in_deg=True,
+                                                channels=channels, 
+                                                time_limits=time_limits, 
+                                                fourier_order=fourier_order)
             # COnstruct metadata
             delta = self.data_time[1] - self.data_time[0]
             npts = len(self.data_time)
@@ -238,18 +240,21 @@ class ElementOutput(AxiSEM3DOutput):
         return stream
 
 
-    def stream(self, point: list, channels: list = None,
+    def stream(self, point: list, coord_in_deg: bool = True, 
+               channels: list = None,
                time_limits: list = None, 
                fourier_order: int = None) -> obspy.Stream:
-        """Takes in the location of a station in meters and degrees
-        and returns a stream with the wavefields computed at all stations.
+        """
+        Generate a stream with the wavefields computed at all stations given the location.
 
         Args:
-            point (list): The location of the station in meters and degrees.
+            point (list): The location of the station in meters and radians/degrees.
                         It should be a list with the following elements:
-                        - radian position in meters (float)
-                        - latitude in degrees (float)
-                        - longitude in degrees (float)
+                        - radial position in meters (float)
+                        - latitude in radians/degrees (float)
+                        - longitude in radians/degrees (float)
+            coord_in_deg (bool, optional): Specify whether the coordinates are in degrees.
+                                        Defaults to True.
             channels (list, optional): List of wavefield channels to include.
                                     Defaults to None, which includes all channels.
             time_limits (list, optional): Time limits for the data.
@@ -261,18 +266,25 @@ class ElementOutput(AxiSEM3DOutput):
 
         Returns:
             obspy.Stream: A stream containing the wavefields computed at all stations.
-        """         
+        """      
+        if coord_in_deg:
+            point[1] = np.deg2rad(point[1])
+            point[2] = np.deg2rad(point[2])
+
         # initiate stream that will hold data 
         stream = obspy.Stream()
         # get the data at this station (assuming RTZ components)
-        wave_data = self.load_data_at_point(point, channels, 
-                                            time_limits, 
-                                            fourier_order)
+        wave_data = self.load_data_at_point(point=point,
+                                            channels=channels, 
+                                            time_limits=time_limits, 
+                                            fourier_order=fourier_order,
+                                            coord_in_deg=False)
         # Construct metadata 
         delta = self.data_time[1] - self.data_time[0]
         npts = len(self.data_time)
         network = str(np.random.randint(0, 100))
         station_name = str(np.random.randint(0, 100))
+
         if channels is not None:
                 selected_detailed_channels = [element for element in self.detailed_channels \
                                             if any(element.startswith(prefix) for prefix in channels)]
@@ -293,52 +305,64 @@ class ElementOutput(AxiSEM3DOutput):
         return stream
     
 
-    def load_data_at_point(self, point: list, channels: list = None,
-                           time_limits: list = None, fourier_order: int = None) -> np.ndarray:
-        """Expands an in-plane point into the longitudinal direction using the Fourier expansion.
+    def load_data_at_point(self, point: list, coord_in_deg: bool = True, 
+                        channels: list = None,
+                        time_limits: list = None, 
+                        fourier_order: int = None) -> np.ndarray:
+        """
+        Expand an in-plane point into the longitudinal direction using the Fourier expansion.
 
         Args:
             point (list): A list representing the point in geographical coordinates.
                         It should contain the following elements:
                         - radial position in meters (float)
-                        - latitude in degrees (float)
-                        - longitude in degrees (float)
-            channels (list, optional): List of channels to include. Defaults to None, which includes all channels.
-            time_limits (list, optional): Time limits for the data. It should be a list with two elements:
+                        - latitude in degrees/radians (float)
+                        - longitude in degrees/radians (float)
+            coord_in_deg (bool, optional): Specify whether the coordinates are in degrees.
+                                        Defaults to True.
+            channels (list, optional): List of channels to include.
+                                    Defaults to None, which includes all channels.
+            time_limits (list, optional): Time limits for the data.
+                                        It should be a list with two elements:
                                         - start time in seconds (float)
                                         - end time in seconds (float)
                                         Defaults to None, which includes all times.
-            fourier_order (int, optional): Maximum Fourier order. Defaults to None.
+            fourier_order (int, optional): Maximum Fourier order.
+                                        Defaults to None.
 
         Returns:
             np.ndarray: The result of the Fourier expansion, represented as a NumPy array.
         """
-        
         # Transform geographical to cylindrical coords in source frame
+        if coord_in_deg:
+            point[1] = np.deg2rad(point[1])
+            point[2] = np.deg2rad(point[2])
+
         _, _, phi = self._geo_to_cyl(point)
-        # Interpolate the data inplane
+
+        # Interpolate the data in-plane
         interpolated_data = self.inplane_interpolation(point, channels, time_limits)
-        
-        # I don't fully understand how this fourier reconstruction works ...
-        # set complex type
-        complex_type = np.complex32 if interpolated_data.dtype == np.complex64 else np.complex128
 
-        # find max fourier order
-        max_Fourier_order = len(interpolated_data[:,0,0]) // 2
-        if fourier_order is not None and fourier_order < max_Fourier_order:
-            max_Fourier_order = fourier_order // 2 * 2
+        # Set complex type
+        complex_type = interpolated_data.dtype if np.iscomplexobj(interpolated_data) else np.complex128
 
-        # initialize result with 0th order 
+        # Find max Fourier order
+        max_fourier_order = len(interpolated_data[:, 0, 0]) // 2
+        if fourier_order is not None and fourier_order < max_fourier_order:
+            max_fourier_order = fourier_order // 2 * 2
+
+        # Initialize result with 0th order
         result = interpolated_data[0].copy()
-        # add higher orders
-        for order in np.arange(1, max_Fourier_order + 1):
+
+        # Add higher orders
+        for order in range(1, max_fourier_order + 1):
             coeff = np.zeros(result.shape, dtype=complex_type)
-            # real part
+            # Real part
             coeff.real = interpolated_data[order * 2 - 1]
-            # complex part of Fourier coefficients
-            if order * 2 < len(interpolated_data): # check for Nyquist
+            # Complex part of Fourier coefficients
+            if order * 2 < len(interpolated_data):  # Check for Nyquist
                 coeff.imag += interpolated_data[order * 2]
-            result += (2. * np.exp(1j * order * phi) * coeff).real
+            result += (2.0 * np.exp(1j * order * phi) * coeff).real
 
         return result
 
@@ -527,35 +551,43 @@ class ElementOutput(AxiSEM3DOutput):
 
 
     def _geo_to_cyl(self, point: list) -> list:
-        """Converts geographical coordinates to cylindrical 
-        coordinates in the seismic frame
+        """
+        Convert geographical coordinates to cylindrical coordinates in the
+        seismic frame.
 
         Args:
-            point (list): [radial position in m, latitude in deg, longitude in deg]
+            point (list): [radial position in m, latitude in radians, longitude
+            in radians]
 
         Returns:
-            list: [radial position in m, azimuth from source in rad]
-        """        
-        s_earth = point[0]
-        theta_earth = np.deg2rad(point[1])
-        phi_earth = np.deg2rad(point[2])
+            list: [radial position in m, vertical position in m, azimuth from
+            source in rad]
+        """
+        radial_pos = point[0]
+        latitude = point[1]
+        longitude = point[2]
 
-        # Transform spherical coordinates in earth frame of the point to 
-        # cartesian coordinates in the earth frame
-        # station location in real earth (spherical coords)
-        [x_earth, y_earth, z_earth] = [s_earth * np.cos(theta_earth) * np.cos(phi_earth), 
-                                       s_earth * np.cos(theta_earth) * np.sin(phi_earth), 
-                                       s_earth * np.sin(theta_earth)]
+        cos_lat = np.cos(latitude)
+        sin_lat = np.sin(latitude)
+        cos_lon = np.cos(longitude)
+        sin_lon = np.sin(longitude)
 
-        # rotate coordinates of the point to source frame
-        [x, y, z] = np.matmul(self.rotation_matrix.transpose(), np.asarray([x_earth, y_earth, z_earth]))
+        # Transform geographical coordinates to Cartesian coordinates in the
+        # Earth frame
+        x_earth = radial_pos * cos_lat * cos_lon
+        y_earth = radial_pos * cos_lat * sin_lon
+        z_earth = radial_pos * sin_lat
 
-        # transform to cylindrical coords in the source frame
-        # z is already fine 
+        # Rotate coordinates from the Earth frame to the source frame
+        rotated_coords = np.matmul(self.rotation_matrix.transpose(), np.asarray([x_earth, y_earth, z_earth]))
+        x, y, z = rotated_coords
+
+        # Convert to cylindrical coordinates in the source frame
         s = np.sqrt(x**2 + y**2)
         phi = np.arctan2(y, x)
-        
+
         return [s, z, phi]
+
 
 
     def _cart_to_polar(self, s: float, z: float) -> list:
@@ -563,8 +595,8 @@ class ElementOutput(AxiSEM3DOutput):
         to polar coords
 
         Args:
-            s (float): distance from cylindarical axis
-            z (float): distance along cylindrical axis
+            s (float): distance from cylindarical axis in m
+            z (float): distance along cylindrical axis in m
 
         Returns:
             list: [radius, theta]
@@ -715,8 +747,9 @@ class ElementOutput(AxiSEM3DOutput):
                 [x, y, z] = inplane_dim1[index1] * base1 + inplane_dim2[index2] * base2  # Slice frame -> Earth frame
                 rad, lat, lon = cart2sph(x, y, z)
                 if rad > R_min and rad < R_max:
-                    inplane_field[index2, index1, :, :] = self.load_data_at_point([rad, np.rad2deg(lat), np.rad2deg(lon)],
-                                                                                   channels=['U'])
+                    inplane_field[index2, index1, :, :] = self.load_data_at_point(point=[rad, lat, lon],
+                                                                                  coord_in_deg=False, 
+                                                                                  channels=['U'])
                 else:
                     inplane_field[index2, index1, :, :] = np.full((3, len(self.data_time)), np.nan)
                 pbar.update(1)
